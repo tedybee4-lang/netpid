@@ -1,0 +1,47 @@
+✔ sql-tenant-aware.conf braces are balanced (552.4174ms)
+✔ accounting uses the FreeRADIUS 3 reference/type structure (2.5985ms)
+✔ accounting queries are tenant-scoped (1.5141ms)
+✔ client_query is valid PostgreSQL (0.8088ms)
+✔ enabled user sync writes one protocol-agnostic credential and removes legacy MS-CHAP rows (8.8419ms)
+✔ reactivation of a previously disabled login re-creates authorization (0.9578ms)
+✔ disabled login loses every authorization row and its live session is kicked (1.0996ms)
+✔ a login without a stored password is reported, not retried forever or half-synced (0.857ms)
+✔ pending group is synced from the user-sync path so limits always land (0.7928ms)
+✔ group sync propagates Mikrotik-Rate-Limit and drops zero/empty limits (2.0849ms)
+✔ nas sync upserts by (isp_id, nasname) and cleans up its own stale client (1.1135ms)
+✔ health probe reports offline when nothing answers (never a fake ONLINE) (2518.5845ms)
+✔ health probe is online on a signed reply, degraded when a real account is rejected (606.7429ms)
+✔ health probe treats a Reject for a throwaway probe user as alive (3.6888ms)
+✔ health probe refuses to fake RadSec health over UDP (0.5939ms)
+✔ test-auth never probes a login owned by another ISP (0.7313ms)
+✔ test-auth accepts a tenant login end-to-end and records the result (64.5847ms)
+✔ test-auth on a disabled account reports the Reject as the correct outcome (7.8685ms)
+✔ nasname is looked up per tenant, never globally (17.6104ms)
+✔ username ownership wins over NAS ordering (IPv4-mapped inet values) (0.5801ms)
+✔ NAS-IP-Address attribute is used when the source IP is a NAT address (1.591ms)
+▶ usernames are normalised and validated
+  ✔ auth rows are protocol-agnostic (no forced MS-CHAP) (2.5532ms)
+  ✔ group membership and per-user reply rows carry the tenant (0.5082ms)
+  ✔ MikroTik-Rate-Limit / group attributes are validated and zero-safe (0.5594ms)
+  ✔ subscription status drives RADIUS authorization (0.2244ms)
+  ✔ group sync is required for new, failed or re-limited groups (0.7445ms)
+  ✔ accounting rows carry gigawords, canonical username and lifecycle flags (0.5816ms)
+  ✔ octet math never loses the low word and never goes negative (0.4388ms)
+  ✔ unstopped sessions are swept after the grace window (0.2791ms)
+✔ usernames are normalised and validated (7.3431ms)
+✔ Access-Request encodes the RFC 2865 required attributes (4.0478ms)
+✔ User-Password encryption round-trips for every block boundary (38.7592ms)
+✔ Message-Authenticator detects tampering (1.5909ms)
+✔ Disconnect-Request is Code 40 with Message-Authenticator + Event-Timestamp (2.6864ms)
+✔ parsePacket rejects malformed packets (45.6051ms)
+✔ verifyResponseAuthenticator accepts a correctly signed reply only (5.7224ms)
+✔ probeAccess: Access-Accept / Access-Reject are healthy, silence is offline (354.3512ms)
+✔ sendDisconnect: ACK means kicked, NAK and silence do not (14.9034ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7691.6976

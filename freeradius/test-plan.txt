@@ -1,0 +1,7 @@
+# Test auth from the VPS shell (passwords never logged by NETPID):
+#   radtest <username> <password> 127.0.0.1 0 <nas-secret>
+# Multi-tenant checks (spec §75):
+#   TEST 1: ISP A user → expect Access-Accept
+#   TEST 2: same username in ISP B (different NAS IP) → independent result, no collision
+#   TEST 3: disabled customer (radcheck rows removed) → Access-Reject
+#   TEST 4: reactivated (rows re-synced) → Access-Accept

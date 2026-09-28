@@ -1,0 +1,2 @@
+# Generated per router by NETPID sync — do not hand-edit on the server.
+# client <identity> { ipaddr = <router-public-ip>  secret = <unique-per-router>  proto = udp  require_message_authenticator = yes }

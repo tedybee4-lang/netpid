@@ -1,0 +1,8 @@
+{
+  "name": "netpid-network-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": { "@supabase/supabase-js": "^2.44.0", "pg": "^8.12.0" }
+}
