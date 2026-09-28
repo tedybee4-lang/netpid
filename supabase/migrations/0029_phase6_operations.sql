@@ -2,7 +2,7 @@
 
 -- 1. Resellers / Agents
 create table if not exists public.resellers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   user_id uuid references auth.users(id) on delete set null,
   name text not null,
@@ -17,7 +17,7 @@ create table if not exists public.resellers (
 
 -- 2. Referrals
 create table if not exists public.referrals (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   referrer_customer_id uuid not null references public.customers(id) on delete cascade,
   referred_customer_id uuid references public.customers(id) on delete set null,
@@ -29,7 +29,7 @@ create table if not exists public.referrals (
 
 -- 3. Hardware & Inventory
 create table if not exists public.inventory_items (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   item_type text not null check (item_type in ('onu','router','cable','switch','antenna','accessory','other')),
   model text not null,
@@ -47,7 +47,7 @@ create index if not exists idx_inv_serial on public.inventory_items(isp_id, seri
 
 -- 4. Operating Expenses
 create table if not exists public.expenses (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   category text not null check (category in ('upstream_bandwidth','rent','power','transport','maintenance','salaries','hardware','other')),
   title text not null,
@@ -62,7 +62,7 @@ create index if not exists idx_expenses_date on public.expenses(isp_id, expense_
 
 -- 5. Customer Loyalty Points
 create table if not exists public.loyalty_ledger (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   points integer not null, -- positive for earn, negative for redeem

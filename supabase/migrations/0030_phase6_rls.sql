@@ -1,5 +1,12 @@
 -- NETPID Phase 6: RLS for Resellers, Referrals, Inventory, Expenses, Loyalty Ledger
 
+-- Helper: active member with owner/admin role in the ISP (used by *_admin policies below)
+create or replace function public.is_isp_admin(p_isp_id uuid)
+returns boolean language sql security definer stable
+set search_path = public as $$
+  select public.has_isp_role(p_isp_id, 'owner') or public.has_isp_role(p_isp_id, 'admin');
+$$;
+
 -- Resellers
 alter table public.resellers enable row level security;
 drop policy if exists res_member on public.resellers;

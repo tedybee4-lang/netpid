@@ -1,6 +1,6 @@
 -- NETPID Phase 4: PPPoE/HotSpot accounts, vouchers, accounting mirror, APs
 create table if not exists public.pppoe_accounts (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   radius_user_id uuid references public.radius_users(id) on delete set null,
@@ -16,7 +16,7 @@ create trigger trg_pppoe_touch before update on public.pppoe_accounts
   for each row execute function public.touch_updated_at();
 
 create table if not exists public.hotspot_users (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid references public.customers(id) on delete set null,
   radius_user_id uuid references public.radius_users(id) on delete set null,
@@ -28,7 +28,7 @@ create table if not exists public.hotspot_users (
 );
 
 create table if not exists public.voucher_batches (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   name text not null, package_id uuid not null references public.packages(id) on delete restrict,
   quantity integer not null check (quantity > 0 and quantity <= 5000),
@@ -38,7 +38,7 @@ create table if not exists public.voucher_batches (
   created_at timestamptz not null default now()
 );
 create table if not exists public.vouchers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   batch_id uuid not null references public.voucher_batches(id) on delete cascade,
   code text not null,
@@ -71,7 +71,7 @@ create table if not exists public.radius_sessions (
 create index if not exists idx_sessions_open on public.radius_sessions(isp_id, is_open, last_update desc);
 
 create table if not exists public.access_points (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   router_id uuid references public.routers(id) on delete set null,
   name text not null, ip inet, mac text, location text, ssid text,

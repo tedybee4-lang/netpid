@@ -1,6 +1,6 @@
 -- NETPID Phase 4: routers (app DB). Credentials locked (service-role only).
 create table if not exists public.routers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   name text not null,
   identity text,
@@ -30,7 +30,7 @@ create table if not exists public.router_credentials (
 );
 
 create table if not exists public.router_health (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   router_id uuid not null references public.routers(id) on delete cascade,
   reachable boolean not null,
   latency_ms integer,
@@ -42,7 +42,7 @@ create table if not exists public.router_health (
 create index if not exists idx_router_health_r on public.router_health(router_id, checked_at desc);
 
 create table if not exists public.router_backups (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   router_id uuid not null references public.routers(id) on delete cascade,
   storage_path text not null, -- private bucket path, never public URL
@@ -50,7 +50,7 @@ create table if not exists public.router_backups (
 );
 
 create table if not exists public.ip_pools (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   name text not null, ranges text not null, -- e.g. 10.10.0.10-10.10.0.254
   created_at timestamptz not null default now(),

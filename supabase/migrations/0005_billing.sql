@@ -1,6 +1,6 @@
 -- NETPID Phase 1: SaaS subscription billing (platform revenue, separate from ISP M-Pesa)
 create table if not exists public.netpid_plans (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   slug text not null unique, name text not null,
   price_monthly integer not null default 0, -- minor units (cents of KES)
   price_yearly integer not null default 0,
@@ -11,7 +11,7 @@ create table if not exists public.netpid_plans (
   created_at timestamptz not null default now()
 );
 create table if not exists public.netpid_subscriptions (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   plan_id uuid not null references public.netpid_plans(id),
   status text not null default 'trialing'
@@ -26,7 +26,7 @@ drop trigger if exists trg_subs_touch on public.netpid_subscriptions;
 create trigger trg_subs_touch before update on public.netpid_subscriptions
   for each row execute function public.touch_updated_at();
 create table if not exists public.netpid_subscription_payments (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   subscription_id uuid not null references public.netpid_subscriptions(id) on delete cascade,
   isp_id uuid not null references public.isps(id) on delete cascade,
   amount integer not null, currency text not null default 'KES',
@@ -37,7 +37,7 @@ create table if not exists public.netpid_subscription_payments (
   paid_at timestamptz, created_at timestamptz not null default now()
 );
 create table if not exists public.netpid_invoices (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   subscription_id uuid references public.netpid_subscriptions(id),
   number text not null unique, amount integer not null,

@@ -2,7 +2,7 @@
 
 -- ---------- platform_admins ----------
 create table if not exists public.platform_admins (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   user_id uuid not null unique references auth.users(id) on delete cascade,
   email text not null,
   full_name text,
@@ -39,7 +39,7 @@ create table if not exists public.isp_feature_flags (
 
 -- ---------- announcements ----------
 create table if not exists public.announcements (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   audience text not null default 'isps' check (audience in ('isps','platform','all')),
   title text not null,
   body text not null,
@@ -58,7 +58,7 @@ create table if not exists public.system_settings (
 -- RLS policies in 0009_policies.sql.
 
 create table if not exists public.system_health (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   component text not null, -- supabase|database|radius|radius_db|worker|payhero|sms|queue|vercel|webhooks
   status text not null default 'unknown' check (status in ('online','degraded','offline','unknown')),
   latency_ms integer, detail jsonb not null default '{}'::jsonb,

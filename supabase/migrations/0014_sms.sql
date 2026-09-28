@@ -1,6 +1,6 @@
 -- NETPID Phase 2: SMS (TOPSPEED) + notifications (tables; policies in 0015)
 create table if not exists public.sms_providers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   provider text not null default 'topspeed',
   endpoint text not null default 'https://api.topspeed.example/sms',
@@ -22,7 +22,7 @@ create table if not exists public.sms_credentials (
   updated_at timestamptz not null default now()
 );
 create table if not exists public.sms_templates (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   event text not null, -- welcome|payment_received|package_activated|...
   locale text not null default 'en', body text not null,
@@ -31,7 +31,7 @@ create table if not exists public.sms_templates (
   unique (isp_id, event, locale)
 );
 create table if not exists public.sms_logs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   to_phone text not null, body text not null, event text,
   status text not null default 'queued'
@@ -48,7 +48,7 @@ create table if not exists public.sms_usage (
   primary key (isp_id, day)
 );
 create table if not exists public.notifications (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   recipient_user_id uuid references auth.users(id) on delete set null,
   customer_id uuid references public.customers(id) on delete set null,

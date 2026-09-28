@@ -1,6 +1,6 @@
 -- NETPID Phase 1: ISP tenancy core tables
 create table if not exists public.isps (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   name text not null, slug text not null unique,
   logo_url text, phone text, email text,
   location text, support_phone text, support_whatsapp text,
@@ -34,13 +34,13 @@ drop trigger if exists trg_isp_settings_touch on public.isp_settings;
 create trigger trg_isp_settings_touch before update on public.isp_settings
   for each row execute function public.touch_updated_at();
 create table if not exists public.isp_roles (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   slug text not null unique, name text not null,
   description text, permissions jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
 create table if not exists public.isp_users (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   full_name text, phone text,

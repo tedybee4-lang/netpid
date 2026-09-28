@@ -1,6 +1,6 @@
 -- NETPID Phase 1: audit logs, security events, support-mode sessions, jobs
 create table if not exists public.audit_logs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   actor_id uuid references auth.users(id),
   actor_type text not null default 'user'
     check (actor_type in ('user','platform_admin','system','worker')),
@@ -12,21 +12,21 @@ create table if not exists public.audit_logs (
 create index if not exists idx_audit_isp on public.audit_logs(isp_id, created_at desc);
 create index if not exists idx_audit_action on public.audit_logs(action, created_at desc);
 create table if not exists public.security_events (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   user_id uuid references auth.users(id),
   isp_id uuid references public.isps(id) on delete set null,
   kind text not null, ip inet, detail jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 create table if not exists public.login_attempts (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   email text not null, ip inet, success boolean not null default false,
   created_at timestamptz not null default now()
 );
 create index if not exists idx_login_email on public.login_attempts(email, created_at desc);
 -- support mode: platform admin viewing an ISP, fully logged + banner
 create table if not exists public.support_sessions (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   admin_id uuid not null references public.platform_admins(id),
   isp_id uuid not null references public.isps(id) on delete cascade,
   reason text not null, started_at timestamptz not null default now(),
@@ -34,7 +34,7 @@ create table if not exists public.support_sessions (
 );
 -- job queue (worker picks up with FOR UPDATE SKIP LOCKED)
 create table if not exists public.network_jobs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid references public.isps(id) on delete cascade,
   kind text not null, payload jsonb not null default '{}'::jsonb,
   status text not null default 'queued'
@@ -47,14 +47,14 @@ create table if not exists public.network_jobs (
 create index if not exists idx_jobs_poll
   on public.network_jobs(status, run_after, created_at);
 create table if not exists public.job_runs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   job_id uuid not null references public.network_jobs(id) on delete cascade,
   status text not null, attempt integer not null default 1,
   started_at timestamptz not null default now(),
   completed_at timestamptz, error text
 );
 create table if not exists public.network_job_logs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   job_id uuid not null references public.network_jobs(id) on delete cascade,
   level text not null default 'info', message text not null,
   created_at timestamptz not null default now()

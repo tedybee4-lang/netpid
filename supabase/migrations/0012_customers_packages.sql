@@ -1,6 +1,6 @@
 -- NETPID Phase 2: packages + customers (tables; policies in 0015)
 create table if not exists public.packages (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   name text not null,
   service_type text not null check (service_type in ('pppoe','hotspot','voucher','static')),
@@ -22,7 +22,7 @@ create trigger trg_packages_touch before update on public.packages
 create index if not exists idx_packages_isp on public.packages(isp_id, enabled);
 
 create table if not exists public.package_features (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   package_id uuid not null references public.packages(id) on delete cascade,
   key text not null, value text not null,
   created_at timestamptz not null default now(),
@@ -30,7 +30,7 @@ create table if not exists public.package_features (
 );
 
 create table if not exists public.customers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_no text not null,
   user_id uuid references auth.users(id) on delete set null, -- portal login link
@@ -55,13 +55,13 @@ create index if not exists idx_customers_isp_status on public.customers(isp_id, 
 create index if not exists idx_customers_phone on public.customers(isp_id, phone);
 
 create table if not exists public.customer_devices (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   mac text, device_type text, created_at timestamptz not null default now()
 );
 create table if not exists public.customer_addresses (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   label text, address text not null, gps text,

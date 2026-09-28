@@ -1,6 +1,6 @@
 -- NETPID Phase 2: payments (per-ISP PayHero; never mixed with SaaS billing)
 create table if not exists public.payment_providers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   provider text not null default 'payhero', -- payhero
   account_name text, paybill text, till_number text,
@@ -23,7 +23,7 @@ create table if not exists public.payment_provider_credentials (
 );
 
 create table if not exists public.payments (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete restrict,
   package_id uuid references public.packages(id) on delete set null,
@@ -38,7 +38,7 @@ create index if not exists idx_payments_isp on public.payments(isp_id, created_a
 create index if not exists idx_payments_customer on public.payments(customer_id, created_at desc);
 
 create table if not exists public.payment_webhooks (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid references public.isps(id) on delete set null,
   provider text not null default 'payhero',
   provider_tx_id text, payload jsonb not null,
@@ -48,7 +48,7 @@ create table if not exists public.payment_webhooks (
   unique (provider, provider_tx_id)
 );
 create table if not exists public.payment_reconciliation (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   payment_id uuid references public.payments(id) on delete set null,
   expected_amount integer not null, received_amount integer,
@@ -58,7 +58,7 @@ create table if not exists public.payment_reconciliation (
 );
 
 create table if not exists public.invoices (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   number text not null, amount integer not null, currency text not null default 'KES',
@@ -67,7 +67,7 @@ create table if not exists public.invoices (
   unique (isp_id, number)
 );
 create table if not exists public.receipts (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   payment_id uuid not null references public.payments(id) on delete cascade,
   number text not null, amount integer not null, currency text not null default 'KES',

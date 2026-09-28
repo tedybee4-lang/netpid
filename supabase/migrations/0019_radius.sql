@@ -2,7 +2,7 @@
 -- Secrets NEVER in these tables readable by users — see *_secrets tables (no RLS read).
 
 create table if not exists public.radius_servers (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid references public.isps(id) on delete cascade, -- null = shared/global
   name text not null,
   host text not null, -- IP or hostname of FreeRADIUS VPS
@@ -21,7 +21,7 @@ create trigger trg_radius_servers_touch before update on public.radius_servers
   for each row execute function public.touch_updated_at();
 
 create table if not exists public.radius_nas (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   router_id text, -- FK to routers table lands in Phase 4
   shortname text not null,
@@ -50,7 +50,7 @@ create table if not exists public.radius_nas_secrets (
 );
 
 create table if not exists public.radius_users (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete cascade,
   username text not null,

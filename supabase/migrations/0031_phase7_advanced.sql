@@ -2,7 +2,7 @@
 
 -- 1. TR-069 Auto Configuration Server (ACS) CPE Devices
 create table if not exists public.tr069_devices (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   customer_id uuid references public.customers(id) on delete set null,
   serial_number text not null,
@@ -27,7 +27,7 @@ create index if not exists idx_tr069_serial on public.tr069_devices(isp_id, seri
 
 -- 2. Network Topology & Fiber / Wireless Distribution Nodes
 create table if not exists public.network_nodes (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   parent_node_id uuid references public.network_nodes(id) on delete set null,
   router_id uuid references public.routers(id) on delete set null,
@@ -44,7 +44,7 @@ create table if not exists public.network_nodes (
 
 -- 3. AI Assistant Diagnostic Logs & Network Health Checks
 create table if not exists public.ai_diagnostic_logs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   target_type text not null check (target_type in ('customer','router','pppoe','system')),
   target_id text not null,
