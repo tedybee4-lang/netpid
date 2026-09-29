@@ -4,6 +4,7 @@ import { mtConnect, mtCommand, mtClose } from "./mikrotik.js";
 import { decryptSecret } from "./secrets.js";
 import { sendDisconnect } from "./radius-wire.js";
 import { bareUsername, indexNasByName, indexUsernameOwners, mapAccountingRow, resolvePacketTenant, staleCutoffIso } from "./radius-logic.js";
+import { buildCustomerQueue } from "./routeros.mjs";
 
 const COA_TIMEOUT_MS = Number(process.env.RADIUS_COA_TIMEOUT_MS) || 5000;
 
@@ -231,6 +232,116 @@ async function loadUsernameOwners(sb, rows) {
     }
   }
   return index;
+}
+
+// ---------------------------------------------------------------------------
+// router-apply-rate: push a per-customer simple queue to the router.
+//
+// RADIUS (Mikrotik-Rate-Limit) already caps PPPoE/HotSpot logins, but a static
+// IP or a locally-authenticated user never passes through RADIUS, and an ISP
+// sometimes wants a hard ceiling on the router itself. This writes
+// /queue/simple with max-limit="<upload>k/<download>k" — upload first, same
+// order as ratePair() and netpid_rate_limit().
+export async function routerApplyRate(sb, job) {
+  const { router_id, customer_id, username, framed_ip } = job.payload ?? {};
+  if (!router_id) throw new Error("apply-rate missing router_id");
+
+  let down = job.payload?.download_kbps ?? null;
+  let up = job.payload?.upload_kbps ?? null;
+  let label = username ?? null;
+
+  if (customer_id) {
+    const { data: c } = await sb.from("customers")
+      .select("username, download_kbps, upload_kbps, package_id, packages(download_kbps, upload_kbps)")
+      .eq("id", customer_id).single();
+    if (!c) throw new Error("customer not found");
+    const pkg = Array.isArray(c.packages) ? c.packages[0] : c.packages;
+    // Customer override wins; otherwise inherit the package, as the RADIUS
+    // group does — the two paths must never disagree about a speed.
+    down = c.download_kbps ?? pkg?.download_kbps ?? null;
+    up = c.upload_kbps ?? pkg?.upload_kbps ?? null;
+    label = c.username ?? label;
+  }
+  if (down == null && up == null) throw new Error("no download/upload cap resolved for this customer");
+
+  const commands = buildCustomerQueue({
+    username: label, customer_no: label, framed_ip: framed_ip ?? null, download_kbps: down, upload_kbps: up,
+  });
+  if (!commands) throw new Error("speed cap resolved to 0/0 — refusing to write an uncapped queue");
+
+  const { router, password } = await routerCreds(sb, router_id);
+  let conn = null;
+  try {
+    conn = await mtConnect({ host: String(router.host),
+      port: router.use_ssl ? router.api_ssl_port : router.api_port,
+      username: router.api_username, password, ssl: router.use_ssl });
+    // Simple queues have no "add or update"; remove-then-add is the idiom.
+    const name = `netpid-${label}`;
+    const existing = await mtCommand(conn, ["/queue/simple/print", `?name=${name}`]);
+    let applied = 0;
+    for (const row of existing ?? []) {
+      if (row[".id"]) await mtCommand(conn, ["/queue/simple/remove", `=.id=${row[".id"]}`]);
+    }
+    for (const line of commands.split("\n")) {
+      if (line.startsWith("#") || line.startsWith(":do")) continue;
+      const words = line.split(" ").map((w, i) => (i === 0 ? w : `=${w}`));
+      await mtCommand(conn, words);
+      applied++;
+    }
+    await sb.from("router_provision_log").insert({ isp_id: job.isp_id, router_id,
+      action: "speed-applied", source: "worker",
+      detail: { username: label, download_kbps: down, upload_kbps: up, commands: applied } });
+    return { ok: true, username: label, download_kbps: down, upload_kbps: up, applied };
+  } catch (e) {
+    throw new Error(`apply-rate failed: ${String(e?.message ?? e)}`);
+  } finally { if (conn) mtClose(conn); }
+}
+
+// router-provision: push the RADIUS wiring to the router over the RouterOS
+// API. Same end state as the generated .rsc, so an ISP that never logs into
+// the dashboard still gets a router talking to NETPID.
+export async function routerProvision(sb, job) {
+  const { router_id } = job.payload ?? {};
+  if (!router_id) throw new Error("provision missing router_id");
+  const { router, password } = await routerCreds(sb, router_id);
+  const { data: nasRows } = await sb.from("radius_nas")
+    .select("id, shortname, nasname, coa_port").eq("router_uuid", router_id).limit(1);
+  const nas = nasRows?.[0];
+  if (!nas) throw new Error("no RADIUS NAS is linked to this router");
+  const { data: sec } = await sb.from("radius_nas_secrets")
+    .select("encrypted_secret").eq("nas_id", nas.id).maybeSingle();
+  if (!sec?.encrypted_secret) throw new Error("no NAS secret stored — re-run provisioning");
+  const secret = decryptSecret(sec.encrypted_secret);
+  const { data: servers } = await sb.from("radius_servers")
+    .select("host, auth_port, acct_port").or("isp_id.is.null").limit(1);
+  const server = servers?.[0];
+  if (!server) throw new Error("no FreeRADIUS server configured in NETPID");
+
+  let conn = null;
+  const run = async (words) => mtCommand(conn, words);
+  try {
+    conn = await mtConnect({ host: String(router.host),
+      port: router.use_ssl ? router.api_ssl_port : router.api_port,
+      username: router.api_username, password, ssl: router.use_ssl });
+
+    const stale = await run(["/ip/radius/print", `?comment=NETPID:${nas.shortname}`]);
+    for (const row of stale ?? []) {
+      if (row[".id"]) await run(["/ip/radius/remove", `=.id=${row[".id"]}`]);
+    }
+    await run(["/ip/radius/add", "=service=ppp,hotspot", `=address=${server.host}`,
+      `=secret=${secret}`, `=auth-port=${server.auth_port ?? 1812}`,
+      `=acct-port=${server.acct_port ?? 1813}`, "=timeout=1500ms",
+      "=comment=NETPID:" + nas.shortname]);
+    await run(["/ppp/aaa/set", "=use-radius=yes", "=accounting=yes", "=interim-update=5m"]);
+    await run(["/radius/incoming/set", "=accept=yes", `=port=${nas.coa_port ?? 3799}`]);
+
+    await sb.from("router_provision_log").insert({ isp_id: job.isp_id, router_id,
+      action: "provisioned", source: "worker",
+      detail: { shortname: nas.shortname, radius_server: server.host } });
+    return { ok: true, nas: nas.shortname, radius_server: server.host };
+  } catch (e) {
+    throw new Error(`provision failed: ${String(e?.message ?? e)}`);
+  } finally { if (conn) mtClose(conn); }
 }
 
 function parseUptime(s) {

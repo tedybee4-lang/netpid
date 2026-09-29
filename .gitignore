@@ -1,2 +1,13 @@
 # Supabase CLI local state (project ref, version pins, pooler URL)
 supabase/.temp/
+
+# Never commit real credentials (use .env.example as the template)
+.env.local
+.env*.local
+node_modules/
+apps/web/.next/
+
+# Build / typecheck artefacts
+*.tsbuildinfo
+apps/web/next-env.d.ts
+

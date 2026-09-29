@@ -31,7 +31,8 @@ export function randomSecret(bytes = 24): string {
 
 // DB-backed sliding-window rate limit. Returns true if allowed.
 export async function checkRateLimit(
-  svc: { from: (t: string) => Record<string, (...a: never[]) => unknown> } | never,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  svc: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any,
   key: string, limit: number, windowSec: number

@@ -1,6 +1,5 @@
 // NETPID network worker — persistent process (VPS), NOT serverless.
 // Polls public.network_jobs with FOR UPDATE SKIP LOCKED, exponential backoff.
-// Phase 2: + payhero-stk, post-payment (SMS queue), sms-send with limits.
 import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.SUPABASE_URL;
@@ -100,6 +99,7 @@ async function run() {
       "radius-test-auth": mods[0].radiusTestAuth,
       "router-health": mods[1].routerHealth, "router-test": mods[1].routerHealth,
       "router-disconnect": mods[1].routerDisconnect, "router-backup": mods[1].routerBackup,
+      "router-provision": mods[1].routerProvision, "router-apply-rate": mods[1].routerApplyRate,
       "accounting-sync": (sb2, job2) => mods[1].accountingSync(sb2, job2, radiusPool),
     };
     handler = all[job.kind] ?? null;

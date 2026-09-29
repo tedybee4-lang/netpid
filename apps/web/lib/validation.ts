@@ -54,8 +54,32 @@ export const createRouterSchema = z.object({
   api_password: z.string().min(1).max(256),
   use_ssl: z.boolean().default(true),
   // auto-provision a RADIUS NAS client for this router (unique secret shown once)
+  nas: z.boolean().default(true),
   nas_shortname: z.string().min(2).max(64).optional(),
+  // FreeRADIUS endpoint, baked into the generated RouterOS script only
+  radius_server: z.string().min(1).max(120).optional(),
+  site: z.string().max(120).nullable().optional(),
+  notes: z.string().max(1000).nullable().optional(),
+  // Optional PPPoE/HotSpot profiles to render as rate-limited lines in the script
+  profiles: z.array(z.object({
+    name: z.string().min(1).max(64),
+    kind: z.enum(["pppoe", "hotspot"]).optional(),
+    pool: z.string().max(64).optional(),
+    download_kbps: z.number().int().nonnegative().optional(),
+    upload_kbps: z.number().int().nonnegative().optional(),
+  })).max(20).optional(),
 });
+
+// Per-customer speed cap. Both fields are independent: a customer can be
+// 20 Mbps down / 5 Mbps up, or only one of the two. Omitting BOTH clears the
+// override and hands the customer back to their package's group.
+export const updateCustomerSpeedSchema = z.object({
+  download_mbps: z.number().min(0).max(100000).nullable().optional(),
+  upload_mbps: z.number().min(0).max(100000).nullable().optional(),
+}).refine(
+  (v) => v.download_mbps !== undefined || v.upload_mbps !== undefined,
+  { message: "Provide download_mbps and/or upload_mbps" },
+);
 
 export const voucherBatchSchema = z.object({
   name: z.string().min(2).max(120),

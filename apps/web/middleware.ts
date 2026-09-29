@@ -1,4 +1,4 @@
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type SetAllCookies } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(req: NextRequest) {
@@ -9,7 +9,7 @@ export async function middleware(req: NextRequest) {
     {
       cookies: {
         getAll: () => req.cookies.getAll(),
-        setAll: (all) => { all.forEach(({ name, value, options }) => res.cookies.set(name, value, options)); },
+        setAll: (all: Parameters<SetAllCookies>[0]) => { all.forEach(({ name, value, options }) => res.cookies.set(name, value, options)); },
       },
     }
   );

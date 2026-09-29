@@ -1,12 +1,14 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { kes } from "@/lib/isp";
+import { ago, kes, speedPair, statusTone } from "@/lib/format";
 
 export default async function CustomersPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
   const sp = await searchParams;
   const supabase = await createClient();
-  const { data: memberships } = await supabase.from("isp_users").select("isp_id");
+  const { data: memberships } = await supabase.from("isp_users").select("isp_id").limit(1);
   const ispId = memberships?.[0]?.isp_id as string | undefined;
-  let query = supabase.from("customers").select("*, packages(name)")
+  let query = supabase.from("customers")
+    .select("*, packages(name,download_kbps,upload_kbps)")
     .order("created_at", { ascending: false }).limit(100);
   if (ispId) query = query.eq("isp_id", ispId);
   if (sp.status) query = query.eq("status", sp.status);
@@ -17,10 +19,15 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pr
   }, {});
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-black">Customers</h1>
-        <a className="btn-primary" href="/dashboard/customers/new">Add customer</a>
+    <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Customers</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {(customers ?? []).length} shown · last seen comes from RADIUS, never from billing status.
+          </p>
+        </div>
+        <Link className="btn-primary" href="/dashboard/customers/new">Add customer</Link>
       </div>
       <form className="mt-4 flex flex-col gap-2 sm:flex-row" method="get">
         <input name="q" defaultValue={sp.q ?? ""} className="input" placeholder="Search name, phone, customer no…" />
@@ -33,23 +40,36 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pr
         <button className="btn-ghost">Filter</button>
       </form>
       {!customers?.length ? (
-        <div className="card mt-4"><p className="font-semibold">No data yet.</p>
+        <div className="card mt-4"><p className="font-bold">No customers yet</p>
         <p className="mt-1 text-sm text-slate-500">Add your first customer, assign a package, then collect payment via M-Pesa.</p></div>
       ) : (
-        <div className="card mt-4 overflow-x-auto p-0">
-          <table className="w-full min-w-[720px] text-sm">
-            <thead><tr className="text-left text-xs uppercase text-slate-500">
-              <th className="px-4 py-3">Customer</th><th>Phone</th><th>Package</th><th>Status</th><th>Expiry</th>
+        <div className="card-flush mt-4 overflow-x-auto">
+          <table className="table min-w-[860px]">
+            <thead><tr>
+              <th>Customer</th><th>Package</th><th>Speed</th><th>Status</th><th>Seen</th>
             </tr></thead>
-            <tbody>{customers.map((c) => (
-              <tr key={c.id} className="border-t border-slate-100">
-                <td className="px-4 py-3"><a className="font-semibold text-indigo-700 hover:underline" href={`/dashboard/customers/${c.id}`}>{c.full_name}</a>
-                <p className="text-xs text-slate-500">{c.customer_no}{c.username ? ` · ${c.username}` : ""}</p></td>
-                <td className="px-4 py-3">{c.phone}</td>
-                <td className="px-4 py-3">{(c.packages as unknown as { name: string } | null)?.name ?? "—"}</td>
-                <td className="px-4 py-3"><span className="badge bg-slate-100 text-slate-700">{c.status}</span></td>
-                <td className="px-4 py-3">{c.expiry_date ? new Date(c.expiry_date).toLocaleDateString() : "—"}</td>
-              </tr>))}</tbody>
+            <tbody>{customers.map((c) => {
+              const pkg = c.packages as unknown as
+                { name: string; download_kbps: number | null; upload_kbps: number | null } | null;
+              return (
+              <tr key={c.id}>
+                <td>
+                  <Link className="font-semibold text-indigo-700 hover:underline" href={`/dashboard/customers/${c.id}`}>{c.full_name}</Link>
+                  <p className="text-xs text-slate-500">{c.customer_no}{c.username ? ` · ${c.username}` : ""}</p>
+                </td>
+                <td>{pkg?.name ?? "—"}</td>
+                {/* Effective speed per row: a customer-level override wins over
+                    the package, and the badge shows when that is happening so
+                    support can see a capped customer at a glance. */}
+                <td className="tnum">
+                  {speedPair(c.download_kbps ?? pkg?.download_kbps, c.upload_kbps ?? pkg?.upload_kbps)}
+                  {(c.download_kbps != null || c.upload_kbps != null) && (
+                    <span className="badge badge-warn ml-2">override</span>
+                  )}
+                </td>
+                <td><span className={`badge ${statusTone(c.status)}`}>{c.status}</span></td>
+                <td className="text-slate-500">{ago(c.last_seen_at)}</td>
+              </tr>);})}</tbody>
           </table>
         </div>
       )}

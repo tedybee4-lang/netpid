@@ -35,10 +35,12 @@ export async function PUT(req: Request) {
     phone: parsed.data.mac ?? code, service_type: "hotspot",
     package_id: packageId, username: code, status: "active", expiry_date: expiry,
   }).select("id").single();
+  if (!customer) return NextResponse.json({ error: "Failed to create voucher account" }, { status: 400 });
   const { data: ru } = await svc.from("radius_users").insert({
     isp_id: isp.id, customer_id: customer.id, username: code,
     service_type: "hotspot", enabled: true, password_set: true, sync_status: "pending",
   }).select("id").single();
+  if (!ru) return NextResponse.json({ error: "Failed to create RADIUS user" }, { status: 400 });
   await svc.from("radius_user_credentials").insert({
     radius_user_id: ru.id, encrypted_password: encryptSecret(password),
   });

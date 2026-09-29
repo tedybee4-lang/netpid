@@ -30,6 +30,14 @@ See `docs/ARCHITECTURE.md`, `docs/PHASES.md`, `docs/FREERADIUS-DEPLOYMENT.md`.
 ## Quick start (Phase 1)
 
 1. Create Supabase project → link CLI → `supabase db push` (applies `supabase/migrations/*`).
+   - No Docker / no local database? `supabase db push` cannot run. Use the Management
+     API runner instead — it applies the same files and records them in
+     `supabase_migrations.schema_migrations`:
+     ```sh
+     SUPABASE_ACCESS_TOKEN=sbp_xxx node supabase/scripts/apply-migration.mjs --dry-run
+     SUPABASE_ACCESS_TOKEN=sbp_xxx node supabase/scripts/apply-migration.mjs
+     ```
+     (Token: <https://supabase.com/dashboard/account/tokens> with `database_migrations_write`.)
 2. Run `supabase/seed.sql` for plans + feature flags.
 3. Create first platform admin: sign up in app, then in SQL:
    ```sql
@@ -46,3 +54,45 @@ See `docs/ARCHITECTURE.md`, `docs/PHASES.md`, `docs/FREERADIUS-DEPLOYMENT.md`.
 - `active customer ≠ online session`. Sessions come only from RADIUS accounting.
 - No fake data. Empty states say "No data yet." Unconnected integrations say "Not connected."
 - Payments activate only on verified webhook, idempotent, never from frontend "success".
+
+## Verifying a change locally
+
+```sh
+cd apps/web       && npm run typecheck && npm run build   # tsc --noEmit + production build
+cd network-worker && node --test                          # routeros + RADIUS unit tests
+node supabase/scripts/apply-migration.mjs --dry-run       # "0 to apply" = schema in sync
+```
+
+All three should be green before committing. After `npm run build`, `npm start` serves the
+compiled app (override the port with `next start -p 4311`): `/`, `/login`, `/portal/[slug]`
+are public, `/dashboard/*` and `/platform-admin/*` redirect to `/login` when unauthenticated.
+
+## Provisioning a router
+
+`network-worker/scripts/provision-router.mjs` creates the router row (the RouterOS password is
+AES-256-GCM encrypted with `APP_ENCRYPTION_KEY`), registers the RADIUS NAS and can emit the
+generated `<shortname>.rsc` bundle. It runs standalone — no worker process needed.
+
+```sh
+cd network-worker
+node scripts/provision-router.mjs --isp <slug> --name "Nairobi Core 1" \
+  --host 196.201.214.10 --pass '<api-password>' --radius-server 10.0.0.5 \
+  --site Nairobi --out ./out --dry-run     # run --help for every flag
+```
+
+RouterOS script generation lives in `network-worker/src/routeros.mjs`, the single source of
+truth shared by the worker and the dashboard (`POST /api/routers`).
+
+## Troubleshooting
+
+**`Cannot find module …/dist/index.mjs` at startup.** A partially written `node_modules` can
+leave a package missing files that its own `package.json` declares, while `npm install` still
+reports "up to date" (npm compares versions, not file contents). Verify and repair:
+
+```sh
+node scripts/check-node-modules.mjs network-worker/node_modules   # lists every missing entry point
+cd network-worker && npm ci                                       # clean reinstall from the lockfile
+```
+
+**`supabase db push` fails / "Docker is not running".** Docker is only needed for the local
+CLI stack. Use the Management API runner instead (see Quick start step 1).

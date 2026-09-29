@@ -9,13 +9,14 @@ export default async function PortalPage({ params }: { params: Promise<{ slug: s
   const supabase = await createClient();
   const { data: isp } = await supabase.from("isps").select("id,name,slug,phone,support_phone,support_whatsapp").eq("slug", slug).maybeSingle();
   if (!isp) notFound();
-  const [{ data: settings }, { data: packages }] = await supabase.auth.getUser().then(async () => {
-    // Public read: settings + enabled hotspot/voucher packages (RLS: add public read policy below)
-    const s = await supabase.from("isp_settings").select("brand_color,portal_title").eq("isp_id", isp.id).maybeSingle();
-    const p = await supabase.from("packages").select("id,name,price,duration_value,duration_unit,download_kbps")
-      .eq("isp_id", isp.id).eq("enabled", true).in("service_type", ["hotspot", "voucher"]).limit(12);
-    return [s, p];
-  });
+  // Public read: settings + enabled hotspot/voucher packages.
+  // Both queries are independent, so issue them together — this public page is
+  // loaded before login on a phone, and no session is required.
+  const [settings, packages] = await Promise.all([
+    supabase.from("isp_settings").select("brand_color,portal_title").eq("isp_id", isp.id).maybeSingle(),
+    supabase.from("packages").select("id,name,price,duration_value,duration_unit,download_kbps")
+      .eq("isp_id", isp.id).eq("enabled", true).in("service_type", ["hotspot", "voucher"]).limit(12),
+  ]);
   const brand = (settings?.data as { brand_color?: string } | null)?.brand_color ?? "#4F46E5";
 
   return (
