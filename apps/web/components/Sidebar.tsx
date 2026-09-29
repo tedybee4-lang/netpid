@@ -13,43 +13,69 @@ export const NAV: { group: string; items: Item[] }[] = [
     group: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: "grid" },
-      { href: "/dashboard/reports", label: "Reports", icon: "chart" },
+      { href: "/dashboard/favorites", label: "Favorites", icon: "star" },
+      { href: "/dashboard/notifications", label: "Notifications", icon: "bell" },
     ],
   },
   {
     group: "Customers",
     items: [
       { href: "/dashboard/customers", label: "Customers", icon: "users" },
-      { href: "/dashboard/packages", label: "Packages & speeds", icon: "box" },
-      { href: "/dashboard/payments", label: "Payments", icon: "card" },
-      { href: "/dashboard/vouchers", label: "Vouchers", icon: "ticket" },
-      { href: "/dashboard/resellers", label: "Resellers", icon: "share" },
+      { href: "/dashboard/activation", label: "Activation", icon: "zap" },
+      { href: "/dashboard/data-usage", label: "Data usage", icon: "chart" },
+      { href: "/dashboard/vouchers", label: "HotSpot vouchers", icon: "ticket" },
+      { href: "/dashboard/hotspot-binding", label: "HotSpot binding", icon: "link" },
+      { href: "/dashboard/packages", label: "Packages / plans", icon: "box" },
+      { href: "/dashboard/payments", label: "Transactions", icon: "card" },
+      { href: "/dashboard/loyalty", label: "Loyalty points", icon: "gift" },
     ],
   },
   {
     group: "Network",
     items: [
-      { href: "/dashboard/network", label: "Routers & sessions", icon: "router" },
-      { href: "/dashboard/radius", label: "RADIUS", icon: "shield" },
+      { href: "/dashboard/network", label: "Network", icon: "router" },
       { href: "/dashboard/topology", label: "Topology", icon: "map" },
-      { href: "/dashboard/tr069", label: "TR-069", icon: "device" },
-      { href: "/dashboard/diagnostics", label: "Diagnostics", icon: "activity" },
+      { href: "/dashboard/tr069", label: "TR-069 ACS", icon: "device" },
+      { href: "/dashboard/access-points", label: "Access points", icon: "wifi" },
+      { href: "/dashboard/access/pppoe", label: "Access PPPoE routers", icon: "cog" },
+      { href: "/dashboard/access/hotspot", label: "Access HotSpot APs", icon: "wifi" },
+      { href: "/dashboard/radius", label: "RADIUS", icon: "shield" },
+      { href: "/dashboard/diagnostics", label: "AI assistant", icon: "activity" },
     ],
   },
   {
-    group: "Business",
+    group: "Operations",
     items: [
+      { href: "/dashboard/bulk-actions", label: "Bulk actions", icon: "list" },
+      { href: "/dashboard/page-builder", label: "Static pages", icon: "page" },
+      { href: "/dashboard/inventory", label: "Inventory & expenses", icon: "box" },
+      { href: "/dashboard/resellers", label: "Resellers", icon: "share" },
       { href: "/dashboard/sms", label: "SMS", icon: "message" },
-      { href: "/dashboard/inventory", label: "Inventory", icon: "box" },
-      { href: "/dashboard/expenses", label: "Expenses", icon: "receipt" },
-      { href: "/dashboard/page-builder", label: "Page builder", icon: "page" },
+      { href: "/dashboard/support", label: "Support tickets", icon: "mail" },
+      { href: "/dashboard/logs", label: "Logs", icon: "clock" },
+      { href: "/dashboard/reports", label: "Reports", icon: "chart" },
     ],
   },
   {
-    group: "Account",
+    group: "Tools",
     items: [
-      { href: "/dashboard/users", label: "Users & roles", icon: "team" },
+      { href: "/dashboard/health/hotspot", label: "Fix HotSpot", icon: "wrench" },
+      { href: "/dashboard/health/pppoe", label: "Fix PPPoE", icon: "wrench" },
+      { href: "/dashboard/extras", label: "Extras", icon: "sparkle" },
+      { href: "/dashboard/integrations/uisp", label: "UISP", icon: "plug" },
+      { href: "/dashboard/social-spot", label: "Social Spot / support", icon: "chat" },
+      { href: "/dashboard/escalate", label: "Escalate", icon: "alert" },
+      { href: "/dashboard/recycle-bin", label: "Recycle bin", icon: "trash" },
+    ],
+  },
+  {
+    group: "Settings",
+    items: [
       { href: "/dashboard/settings", label: "Settings", icon: "cog" },
+      { href: "/dashboard/settings/pppoe", label: "PPPoE settings", icon: "cog" },
+      { href: "/dashboard/settings/hotspot", label: "HotSpot settings", icon: "cog" },
+      { href: "/dashboard/page-builder", label: "Page builder", icon: "page" },
+      { href: "/dashboard/users", label: "Users & roles", icon: "team" },
     ],
   },
 ];
@@ -74,6 +100,21 @@ const ICONS: Record<string, string> = {
   cog: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M19.4 13.5l1.7 1-1.9 3.2-1.9-.7a7.6 7.6 0 0 1-2 .8l-.4 2h-3.8l-.4-2a7.6 7.6 0 0 1-2-.8l-1.9.7-1.9-3.2 1.7-1a7.7 7.7 0 0 1 0-2.3l-1.7-1 1.9-3.2 1.9.7a7.6 7.6 0 0 1 2-.8l.4-2h3.8l.4 2a7.6 7.6 0 0 1 2 .8l1.9-.7 1.9 3.2-1.7 1a7.7 7.7 0 0 1 0 2.3z",
   team: "M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
   page: "M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v6h5M8 13h8M8 17h6",
+  star: "M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8L3.5 9.7l5.9-.9z",
+  bell: "M18 15V10a6 6 0 1 0-12 0v5l-2 3h16zM10.5 21a1.8 1.8 0 0 0 3 0",
+  zap: "M13 2L4.5 13.5H11L10 22l8.5-11.5H12z",
+  link: "M9.5 14.5l5-5M8 11l-2 2a3.5 3.5 0 0 0 5 5l2-2M16 13l2-2a3.5 3.5 0 0 0-5-5l-2 2",
+  gift: "M3 11h18v9H3zM3 8h18v3H3zM12 8v12M12 8S9.5 3 7.5 4.5 9 8 12 8zM12 8s2.5-5 4.5-3.5S15 8 12 8z",
+  wifi: "M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.5 16a6 6 0 0 1 7 0M12 19.5h.01",
+  list: "M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01",
+  wrench: "M20 6.5a5 5 0 0 1-6.6 4.7L6 18.6a2 2 0 0 1-2.8-2.8l7.4-7.4A5 5 0 0 1 17.5 3z",
+  sparkle: "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
+  plug: "M9 3v6M15 3v6M6 9h12v3a6 6 0 0 1-12 0zM12 18v3",
+  chat: "M4 5h16v11H9l-5 4zM8 9h8M8 12h5",
+  alert: "M12 4l9 16H3zM12 10v4M12 17h.01",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3.5 2",
+  mail: "M3 6h18v12H3zM3 7l9 6 9-6",
 };
 
 export function Icon({ name, className = "h-5 w-5" }: { name: string; className?: string }) {
@@ -87,8 +128,48 @@ export function Icon({ name, className = "h-5 w-5" }: { name: string; className?
 
 export function SidebarNav() {
   const pathname = usePathname() ?? "/dashboard";
+  const [q, setQ] = useState("");
+  const term = q.trim().toLowerCase();
+  // A flat, de-duplicated list: the same page appears under two groups
+  // (Page builder is both "Static pages" and "Page builder"), and searching
+  // must not offer it twice.
+  const flat = Array.from(
+    NAV.reduce((acc, section) => {
+      for (const item of section.items) if (!acc.has(item.href)) acc.set(item.href, item);
+      return acc;
+    }, new Map<string, Item>()).values(),
+  );
+  const results = term ? flat.filter((i) => i.label.toLowerCase().includes(term)) : [];
+
   return (
     <nav className="flex-1 space-y-1 overflow-y-auto px-3 pb-6">
+      <div className="relative pb-2 pt-3">
+        <Icon name="grid" className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+        <input
+          type="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search menu…"
+          aria-label="Search menu"
+          className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-8 pr-2 text-sm text-slate-200 placeholder:text-slate-500 outline-none transition focus:border-indigo-500 focus:bg-white/10"
+        />
+      </div>
+      {term ? (
+        <div className="space-y-1">
+          <p className="shell-heading pt-2">{results.length} result{results.length === 1 ? "" : "s"}</p>
+          {results.map((item) => (
+            <Link key={item.href} href={item.href} onClick={() => setQ("")}
+              className="shell-link" aria-current={pathname === item.href ? "page" : undefined}>
+              <Icon name={item.icon} className="h-4 w-4" />
+              {item.label}
+            </Link>
+          ))}
+          {!results.length && (
+            <p className="px-3 py-2 text-xs text-slate-500">No menu item matches “{q}”.</p>
+          )}
+        </div>
+      ) : (
+        <>
       {NAV.map((section) => (
         <div key={section.group}>
           <p className="shell-heading">{section.group}</p>
@@ -97,16 +178,18 @@ export function SidebarNav() {
             const active = pathname === item.href
               || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} href={item.href}
+              <Link key={`${section.group}-${item.href}`} href={item.href}
                 className={`shell-link ${active ? "shell-link-active" : ""}`}
                 aria-current={active ? "page" : undefined}>
-                <Icon name={item.icon} />
+                <Icon name={item.icon} className="h-4 w-4" />
                 {item.label}
               </Link>
             );
           })}
         </div>
       ))}
+        </>
+      )}
     </nav>
   );
 }
