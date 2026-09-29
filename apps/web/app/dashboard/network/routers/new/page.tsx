@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import QuickAddRouter from "../QuickAddRouter";
 
 type Created = {
   router: { id: string; name: string; host: string };
@@ -133,9 +134,23 @@ export default function NewRouterPage() {
       </Link>
       <h1 className="mt-2 text-2xl font-black tracking-tight">Add MikroTik router</h1>
       <p className="mt-1 text-sm text-slate-500">
-        Register the router, get a RADIUS NAS client and a ready-to-paste RouterOS script,
-        plus a one-time RADIUS secret.
+        Enter a name. NETPID fills in the management IP, API credentials, RADIUS NAS
+        and the shared secret, and generates both a RouterOS 6 and a RouterOS 7 script.
       </p>
+
+      <div className="mt-6">
+        <QuickAddRouter />
+      </div>
+
+      <details className="card mt-8">
+        <summary className="cursor-pointer text-sm font-bold uppercase tracking-wide text-slate-500">
+          Advanced: enter the IP and credentials yourself
+        </summary>
+        <p className="hint mt-2">
+          Only needed when the management network differs from your provisioning
+          defaults, or you are importing a router that already exists.
+        </p>
+      </details>
 
       <form onSubmit={submit} className="card mt-6 space-y-5">
         <div className="grid gap-4 sm:grid-cols-2">

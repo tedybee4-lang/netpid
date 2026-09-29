@@ -4,7 +4,72 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCustomerQueue, buildRouterosSetup, ratePair, rosName, rosQuote } from "../src/routeros.mjs";
+import { buildCustomerQueue, buildRouterosSetup, normalizeRosVersion, ratePair, rosName, rosPaths, rosQuote } from "../src/routeros.mjs";
+
+// --- RouterOS 6 vs 7 -------------------------------------------------------
+// These pin the menu paths that MOVED between majors. A script that emits the
+// wrong path does not error — it silently configures nothing, which is exactly
+// the failure this suite exists to prevent.
+
+test("normalizeRosVersion accepts the shapes an operator actually types", () => {
+  assert.equal(normalizeRosVersion("6"), "6");
+  assert.equal(normalizeRosVersion("6.49.10"), "6");
+  assert.equal(normalizeRosVersion("6.x"), "6");
+  assert.equal(normalizeRosVersion(6), "6");
+  assert.equal(normalizeRosVersion("7"), "7");
+  assert.equal(normalizeRosVersion("7.14.3"), "7");
+  assert.equal(normalizeRosVersion(""), "7", "an unprobed router defaults to v7");
+  assert.equal(normalizeRosVersion("banana"), "7", "never emits a broken version");
+});
+
+test("v6 and v7 use the correct radio menu and interface name", () => {
+  const opts = { shortname: "core", radiusServer: "10.0.0.5", secret: "x", wifiSsid: "Lipanet" };
+
+  const v6 = buildRouterosSetup({ ...opts, rosVersion: "6" });
+  assert.match(v6, /RouterOS 6/);
+  assert.match(v6, /\/interface wireless set \[find name=wlan1\]/);
+  assert.doesNotMatch(v6, /\/interface wifi /, "v6 has no /interface/wifi menu");
+
+  const v7 = buildRouterosSetup({ ...opts, rosVersion: "7" });
+  assert.match(v7, /RouterOS 7/);
+  assert.match(v7, /\/interface wifi set \[find name=wifi1\]/);
+  assert.doesNotMatch(v7, /\/interface wireless set/,
+    "7.14+ wifiwave2 replaced /interface/wireless");
+});
+
+test("HotSpot cookie hardening is v7-only", () => {
+  const base = { shortname: "core", radiusServer: "10.0.0.5", secret: "x",
+    profiles: [{ name: "hs", kind: "hotspot", download_kbps: 5000, upload_kbps: 1000 }] };
+  assert.match(buildRouterosSetup({ ...base, rosVersion: "7" }), /http-cookie-httponly=yes/);
+  assert.doesNotMatch(buildRouterosSetup({ ...base, rosVersion: "6" }), /http-cookie-httponly/,
+    "6.x refuses this property — emitting it would abort the paste");
+});
+
+test("both versions open the API and set identity, clock, DNS and NTP", () => {
+  for (const v of ["6", "7"]) {
+    const s = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5",
+      secret: "x", identity: "Nairobi Core", rosVersion: v });
+    assert.match(s, /\/system identity set name="Nairobi Core"/);
+    assert.match(s, /\/system clock set time-zone-name=Africa\/Nairobi/);
+    assert.match(s, /\/ip dns set servers=1\.1\.1\.1/);
+    assert.match(s, /\/system ntp client set enabled=yes/);
+    assert.match(s, /\/ip service set api disabled=no port=8728/);
+    assert.match(s, /\/ip service set api-ssl disabled=no port=8729/);
+  }
+});
+
+test("an SSID is only touched when the ISP supplied one", () => {
+  const no = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5", secret: "x" });
+  assert.doesNotMatch(no, /mode=ap-bridge/, "never guess at a bridge layout");
+  const yes = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5",
+    secret: "x", wifiSsid: "Lipanet" });
+  assert.match(yes, /mode=ap-bridge country=Kenya/);
+});
+
+test("the DHCP lease path is exposed per version", () => {
+  assert.equal(rosPaths("6").dhcpLease, "/ip/dhcp-server lease");
+  assert.equal(rosPaths("7").dhcpLease, "/ip/dhcp-server/lease");
+});
 
 test("ratePair is UPLOAD first, then download", () => {
   assert.equal(ratePair(512, 5120), "512k/5120k");
