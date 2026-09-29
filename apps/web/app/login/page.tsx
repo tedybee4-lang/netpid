@@ -41,6 +41,12 @@ export default function LoginPage() {
           <Link className="text-indigo-600 hover:underline" href="/signup">Create account</Link>
           <Link className="text-indigo-600 hover:underline" href="/reset-password">Forgot password?</Link>
         </div>
+        {/* Deliberately unobtrusive: the platform console is not part of the
+            ISP product, so it gets a quiet link rather than a competing form.
+            Operators are told about it; customers never go looking for it. */}
+        <p className="mt-6 border-t border-slate-100 pt-4 text-center text-xs text-slate-400">
+          <Link href="/admin-login" className="hover:text-slate-600">Platform administration</Link>
+        </p>
       </div>
     </main>
   );

@@ -197,6 +197,17 @@ export function SidebarNav() {
 // Small-screen navigation. The desktop sidebar is hidden below `lg`, so without
 // this drawer a phone would only ever see whatever page it landed on. One
 // toggle button in the mobile header opens the same SidebarNav as an overlay.
+//
+// WHY THE HEADER IS NOT backdrop-blur BLURRED
+//   Per the CSS filter-effects spec, an element with a backdrop-filter (or
+//   filter/transform) becomes the containing block for any position:fixed
+//   descendant. A `fixed inset-0` drawer rendered inside a blurred header
+//   resolves against the 56px header instead of the viewport — it collapses to
+//   a sliver and the menu appears to do nothing. That was the actual bug.
+//   The usual fixes are a portal (needs @types/react-dom, not a dependency
+//   here) or a solid header. Solid it is: the drawer sits above the header
+//   anyway, and nothing scrolls beneath it while it is open, so the blur was
+//   buying nothing.
 export function MobileNav() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname() ?? "/dashboard";
@@ -211,12 +222,21 @@ export function MobileNav() {
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
   }, [open]);
+  // Escape closes it — expected on a drawer, and it is the only way out for a
+  // keyboard user once focus is behind the overlay.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}
         aria-label="Open navigation" aria-expanded={open}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50">
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border
+          border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
           strokeLinecap="round" className="h-5 w-5" aria-hidden="true">
           <path d="M4 6h16M4 12h16M4 18h16" />
@@ -224,9 +244,10 @@ export function MobileNav() {
       </button>
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div className="absolute inset-0 bg-slate-950/50"
+          <div className="absolute inset-0 bg-slate-950/60"
             onClick={() => setOpen(false)} aria-hidden="true" />
-          <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-slate-900 shadow-2xl">
+          <div role="dialog" aria-modal="true" aria-label="Navigation"
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-slate-900 shadow-2xl">
             <div className="flex items-center justify-between px-6 py-5">
               <span className="flex items-center gap-2.5">
                 <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-sm font-black text-white">

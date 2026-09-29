@@ -45,9 +45,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile bar. The full nav is the same SidebarNav as the desktop rail,
             opened as a drawer — without it a phone could never reach Settings,
-            Reports, Users, etc. */}
+            Reports, Users, etc.
+
+            Deliberately NOT backdrop-blur. A filter/backdrop-filter element
+            becomes the containing block for position:fixed descendants, so a
+            blurred header traps the `fixed inset-0` drawer inside its own 56px
+            box and the hamburger appears dead. Solid costs nothing here: the
+            drawer overlays this bar anyway. See MobileNav in components/Sidebar. */}
         <header className="sticky top-0 z-20 flex items-center justify-between gap-3
-          border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
+          border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
           <span className="flex items-center gap-2 text-sm font-bold">
             <MobileNav />
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-xs

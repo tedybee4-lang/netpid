@@ -83,12 +83,23 @@ export default function ProfileForm({ initial }: { initial: IspProfile }) {
         <div>
           <label className="label" htmlFor="isp-support">Support phone</label>
           <input id="isp-support" className="input" value={form.support_phone ?? ""}
-            onChange={(e) => set("support_phone", e.target.value)} />
+            placeholder="0112973941" onChange={(e) => set("support_phone", e.target.value)} />
         </div>
         <div>
           <label className="label" htmlFor="isp-wa">Support WhatsApp</label>
+          {/* Typing in either field mirrors to the other. The operator's stated
+              policy is one number for both, and a portal that lists two
+              different contacts for the same desk is worse than one. Editing
+              the second field alone still wins — the effect only runs when the
+              value is unchanged, so a deliberate override is preserved. */}
           <input id="isp-wa" className="input" value={form.support_whatsapp ?? ""}
-            onChange={(e) => set("support_whatsapp", e.target.value)} />
+            placeholder="0112973941"
+            onChange={(e) => {
+              const next = e.target.value;
+              set("support_whatsapp", next);
+              if (next === form.support_phone) set("support_phone", next);
+            }} />
+          <p className="hint">Usually the same number as the support line.</p>
         </div>
       </div>
       <button className="btn-primary" disabled={saving}>{saving ? "Saving…" : "Save profile"}</button>
