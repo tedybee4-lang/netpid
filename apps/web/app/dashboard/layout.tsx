@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { SidebarNav, Icon } from "@/components/Sidebar";
+import { SidebarNav, MobileNav, Icon } from "@/components/Sidebar";
 
 // Auth is enforced here as well as in middleware: middleware keeps the session
 // cookie fresh, but this server component is what guarantees an unauthenticated
@@ -43,11 +43,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Mobile bar — the full nav lives on the pages themselves via their
-            own headers, so this only needs identity + a link home. */}
+        {/* Mobile bar. The full nav is the same SidebarNav as the desktop rail,
+            opened as a drawer — without it a phone could never reach Settings,
+            Reports, Users, etc. */}
         <header className="sticky top-0 z-20 flex items-center justify-between gap-3
           border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
           <span className="flex items-center gap-2 text-sm font-bold">
+            <MobileNav />
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-xs
               font-black text-white">NP</span>
             {isp?.name ?? "NETPID"}

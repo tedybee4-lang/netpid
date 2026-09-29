@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 
 // Dashboard navigation. One ordered list so the sidebar and any future
@@ -41,11 +42,15 @@ export const NAV: { group: string; items: Item[] }[] = [
       { href: "/dashboard/sms", label: "SMS", icon: "message" },
       { href: "/dashboard/inventory", label: "Inventory", icon: "box" },
       { href: "/dashboard/expenses", label: "Expenses", icon: "receipt" },
+      { href: "/dashboard/page-builder", label: "Page builder", icon: "page" },
     ],
   },
   {
     group: "Account",
-    items: [{ href: "/dashboard/settings", label: "Settings", icon: "cog" }],
+    items: [
+      { href: "/dashboard/users", label: "Users & roles", icon: "team" },
+      { href: "/dashboard/settings", label: "Settings", icon: "cog" },
+    ],
   },
 ];
 
@@ -67,6 +72,8 @@ const ICONS: Record<string, string> = {
   message: "M20 15a2 2 0 0 1-2 2H8l-4 3V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z",
   receipt: "M6 3h12v18l-3-2-3 2-3-2-3 2zM9.5 8h5M9.5 12h5",
   cog: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M19.4 13.5l1.7 1-1.9 3.2-1.9-.7a7.6 7.6 0 0 1-2 .8l-.4 2h-3.8l-.4-2a7.6 7.6 0 0 1-2-.8l-1.9.7-1.9-3.2 1.7-1a7.7 7.7 0 0 1 0-2.3l-1.7-1 1.9-3.2 1.9.7a7.6 7.6 0 0 1 2-.8l.4-2h3.8l.4 2a7.6 7.6 0 0 1 2 .8l1.9-.7 1.9 3.2-1.7 1a7.7 7.7 0 0 1 0 2.3z",
+  team: "M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
+  page: "M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v6h5M8 13h8M8 17h6",
 };
 
 export function Icon({ name, className = "h-5 w-5" }: { name: string; className?: string }) {
@@ -101,5 +108,62 @@ export function SidebarNav() {
         </div>
       ))}
     </nav>
+  );
+}
+
+// Small-screen navigation. The desktop sidebar is hidden below `lg`, so without
+// this drawer a phone would only ever see whatever page it landed on. One
+// toggle button in the mobile header opens the same SidebarNav as an overlay.
+export function MobileNav() {
+  const [open, setOpen] = useState(false);
+  const pathname = usePathname() ?? "/dashboard";
+
+  // Follow the user to the target page, then close — the drawer is navigation,
+  // not a persistent panel.
+  useEffect(() => { setOpen(false); }, [pathname]);
+  // Don't let the page scroll behind the overlay.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [open]);
+
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}
+        aria-label="Open navigation" aria-expanded={open}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
+          strokeLinecap="round" className="h-5 w-5" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-slate-950/50"
+            onClick={() => setOpen(false)} aria-hidden="true" />
+          <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-5">
+              <span className="flex items-center gap-2.5">
+                <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-sm font-black text-white">
+                  NP
+                </span>
+                <span className="text-sm font-bold text-white">NETPID</span>
+              </span>
+              <button type="button" onClick={() => setOpen(false)}
+                aria-label="Close navigation"
+                className="grid h-9 w-9 place-items-center rounded-lg text-slate-300 transition hover:bg-white/10 hover:text-white">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
+                  strokeLinecap="round" className="h-5 w-5" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+            <SidebarNav />
+          </div>
+        </div>
+      )}
+    </>
   );
 }

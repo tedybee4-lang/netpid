@@ -101,4 +101,51 @@ export const smsSettingsSchema = z.object({
   enabled: z.boolean(),
 });
 
+// Staff invitation. Role slugs are the seeded isp_roles set — "owner" is
+// deliberately excluded: it is only assigned at ISP creation, so nobody can
+// invite themselves into full ownership.
+export const inviteStaffSchema = z.object({
+  email: z.string().email().max(254),
+  full_name: z.string().max(160).optional().or(z.literal("")),
+  role: z.enum(["admin", "technician", "cashier", "support", "reseller"]),
+});
+
+// Staff update: at least one mutable field must be present.
+export const updateStaffSchema = z.object({
+  id: z.string().uuid(),
+  full_name: z.string().max(160).optional().or(z.literal("")),
+  phone: z.string().max(20).optional().or(z.literal("")),
+  is_active: z.boolean().optional(),
+  role: z.enum(["admin", "technician", "cashier", "support", "reseller"]).optional(),
+}).refine(
+  (v) => v.full_name !== undefined || v.phone !== undefined
+    || v.is_active !== undefined || v.role !== undefined,
+  { message: "Nothing to update" },
+);
+
+// Page builder → public portal content stored on isp_settings.
+export const portalSettingsSchema = z.object({
+  brand_color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "hex colour, e.g. #4F46E5"),
+  portal_title: z.string().max(160).optional().or(z.literal("")),
+  payment_instructions: z.string().max(4000).optional().or(z.literal("")),
+  coverage_info: z.string().max(4000).optional().or(z.literal("")),
+  portal_terms: z.string().max(8000).optional().or(z.literal("")),
+  portal_privacy: z.string().max(8000).optional().or(z.literal("")),
+});
+
+// ISP profile edits from Settings. slug stays regex-validated like creation;
+// the DB's unique constraint rejects duplicates.
+export const updateIspProfileSchema = z.object({
+  name: z.string().min(2).max(120).optional(),
+  slug: z.string().min(2).max(60).regex(/^[a-z0-9-]+$/, "lowercase letters, numbers, hyphens").optional(),
+  phone: z.string().max(20).optional().or(z.literal("")),
+  email: z.string().max(254).optional().or(z.literal("")),
+  location: z.string().max(200).optional().or(z.literal("")),
+  support_phone: z.string().max(20).optional().or(z.literal("")),
+  support_whatsapp: z.string().max(20).optional().or(z.literal("")),
+}).refine(
+  (v) => Object.values(v).some((x) => x !== undefined),
+  { message: "Nothing to update" },
+);
+
 
