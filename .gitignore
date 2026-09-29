@@ -7,6 +7,20 @@ supabase/.temp/
 node_modules/
 apps/web/.next/
 
+# Pasted content from the editor session. This is scratch input that can contain
+# pasted credentials (VPS details, keys, tokens) and must never be committed.
+.kalai/
+
+# SSH / VPS credential material, in case a details file is ever saved locally.
+*vps*.txt
+*vps*.json
+*VPS*.txt
+*VPS*.json
+id_rsa
+id_ed25519
+*.pem
+ssh_known_hosts
+
 # Local dev-server log (scratch output, never committed)
 apps/web/dev_out.txt
 

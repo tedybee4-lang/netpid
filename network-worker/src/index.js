@@ -138,3 +138,21 @@ async function run() {
 
 console.log("netpid network worker starting…");
 setInterval(run, 3000);
+
+// Heartbeat runs on its own 45s cadence, independent of the job loop, so a
+// busy queue cannot starve the health report — and a quiet queue still reports.
+import { startHeartbeat, WORKER_ID, WORKER_VERSION } from "./heartbeat.js";
+if (process.env.NETPID_SERVER_ID && process.env.WORKER_HEARTBEAT_SECRET) {
+  startHeartbeat();
+  console.log(`heartbeat enabled · worker ${WORKER_ID} v${WORKER_VERSION}`);
+} else {
+  // Explicit, because a silent no-op here would look identical to a healthy
+  // worker that is simply not being asked.
+  console.log("heartbeat disabled (set NETPID_SERVER_ID and WORKER_HEARTBEAT_SECRET to enable)");
+}
+
+// A second instance on the same host would double-apply jobs and double-count
+// heartbeats. The job claim is already FOR UPDATE SKIP LOCKED, so this is about
+// clarity rather than corruption — but silence would be confusing in a log.
+const INSTANCE = process.env.WORKER_INSTANCE ?? `pid-${process.pid}`;
+console.log(`instance ${INSTANCE}`);

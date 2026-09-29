@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createServiceClient } from "@/lib/supabase/server";
 import { isAdmin, clearAdminSession } from "@/lib/admin-auth";
+import { deriveStatus } from "@/lib/vps";
 import { kes, num } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -74,46 +75,50 @@ export default async function AdminPage() {
     return s.status === "active" && p ? acc + p.price_monthly : acc;
   }, 0);
 
-  async function signOut() {
-    "use server";
-    await clearAdminSession();
-    redirect("/admin-login");
-  }
+  // Server health is summarised here so an operator sees a problem without
+  // having to open the VPS page. Counted from the same deriveStatus() the list
+  // view uses, so the two can never disagree.
+  const { data: servers } = await svc.from("vps_servers").select("*").limit(200);
+  const byStatus = (servers ?? []).reduce<Record<string, number>>((acc, s) => {
+    acc[deriveStatus(s.enabled, s.last_heartbeat_at)] = (acc[deriveStatus(s.enabled, s.last_heartbeat_at)] ?? 0) + 1;
+    return acc;
+  }, {});
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/90 backdrop-blur">
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-rose-600 text-sm font-black text-white">
-              NA
-            </span>
-            <div>
-              <p className="text-sm font-bold">NETPID Administration</p>
-              <p className="text-xs text-slate-400">Platform console · every action is logged</p>
-            </div>
-          </div>
-          <form action={signOut}>
-            <button type="submit" className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5">
-              Sign out
-            </button>
-          </form>
-        </div>
-      </header>
+    <>
+      <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Platform overview</h1>
+      <p className="mt-1 text-sm text-slate-400">
+        Every ISP on the platform, with its subscription state.
+      </p>
 
-      <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">
-        <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Platform overview</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Every ISP on the platform, with its subscription state.
-        </p>
-
-        <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <Card k="ISPs" v={num(isps.data?.length ?? 0)} sub="registered" />
           <Card k="Active subscriptions" v={num(rev)} sub="paying" />
           <Card k="MRR" v={kes(mrr)} sub="from active plans" />
           <Card k="Customers" v={num(customers.count ?? 0)} sub="across all ISPs" />
           <Card k="Routers" v={num(routers.count ?? 0)} sub="provisioned" />
-        </section>
+      </section>
+
+      <Panel title="VPS infrastructure">
+        <div className="flex flex-wrap items-center gap-2">
+          {(["online", "delayed", "offline", "unknown", "disabled"] as const).map((s) => (
+            <span key={s} className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+              s === "online" ? "bg-emerald-500/15 text-emerald-300"
+              : s === "delayed" ? "bg-amber-500/15 text-amber-300"
+              : s === "offline" ? "bg-rose-500/15 text-rose-300"
+              : "bg-white/10 text-slate-400"}`}>
+              {byStatus[s] ?? 0} {s}
+            </span>
+          ))}
+          <Link href="/admin/servers" className="ml-auto text-xs font-semibold text-rose-300 hover:underline">
+            Manage servers →
+          </Link>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          Status is derived from the worker heartbeat, not from a ping: a host that stops
+          reporting for two minutes reads as DELAYED, and only after five as OFFLINE.
+        </p>
+      </Panel>
 
         <Panel title="Infrastructure">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -210,7 +215,6 @@ export default async function AdminPage() {
             Open the operator dashboard
           </Link>
         </p>
-      </div>
-    </main>
+    </>
   );
 }
