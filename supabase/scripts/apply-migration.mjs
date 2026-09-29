@@ -14,6 +14,13 @@
 // so it will not look like "0034" in `supabase migration list` — the NAME is
 // what matches this repo's file names).
 //
+// That timestamp version also breaks the "Supabase Preview" check the Supabase
+// GitHub App runs on every push ("Remote migration versions not found in local
+// migrations directory"), because the check compares the REMOTE version against
+// supabase/migrations/<version>_*.sql. So after each apply this script
+// normalizes the recorded version back to the file's version (e.g. 0034) via
+// the query endpoint. Never let a raw timestamp version survive a push.
+//
 //   # apply every migration that is not on the project yet
 //   SUPABASE_ACCESS_TOKEN=sbp_... node supabase/scripts/apply-migration.mjs
 //
@@ -173,6 +180,18 @@ async function main() {
     const r = await api("migrations", { ...ctx, body: { query: sql, name: m.name } });
     console.log(r.ok ? `ok (HTTP ${r.status})` : `FAILED (HTTP ${r.status})`);
     if (!r.ok) console.error(`  ${JSON.stringify(r.data).slice(0, 800)}`);
+    if (r.ok && m.version) {
+      // The apply endpoint recorded a timestamp version; rewrite it to the
+      // file's version so remote history matches the filenames on disk and the
+      // Supabase GitHub check stays green. 10+ digit values are timestamps;
+      // the not-exists guard skips rows already recorded under the right version.
+      const fix = await api("query", { ...ctx, body: { query:
+        `update supabase_migrations.schema_migrations set version = '${m.version}' ` +
+        `where name = '${m.name}' and version ~ '^[0-9]{10,}$' ` +
+        `and not exists (select 1 from supabase_migrations.schema_migrations x ` +
+        `where x.version = '${m.version}')` } });
+      if (!fix.ok) console.error(`  version normalize failed (HTTP ${fix.status}): ${JSON.stringify(fix.data).slice(0, 400)}`);
+    }
     results.push({ name: m.name, version: m.version, file: path.relative(REPO, m.file), ok: r.ok, status: r.status, error: r.ok ? null : r.data });
   }
 
