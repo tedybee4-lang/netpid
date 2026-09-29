@@ -76,6 +76,18 @@ All three should be green before committing. After `npm run build`, `npm start` 
 compiled app (override the port with `next start -p 4311`): `/`, `/login`, `/portal/[slug]`
 are public, `/dashboard/*` and `/platform-admin/*` redirect to `/login` when unauthenticated.
 
+The authenticated half (`/dashboard/*`, guarded `/api/*`) needs an `@supabase/ssr` session
+cookie, so curl cannot reach it:
+
+```sh
+node scripts/smoke-auth.mjs --provision   # test user + ISP membership (needs SERVICE_ROLE_KEY)
+node scripts/smoke-auth.mjs              # mints the session cookie, hits every guarded route
+node scripts/smoke-auth.mjs --cleanup    # delete the test user again (membership cascades)
+```
+
+It prints status, size, empty-state copy and ISP name per route, and re-checks that a
+cookie-less request still redirects to `/login`.
+
 ## Provisioning a router
 
 `network-worker/scripts/provision-router.mjs` creates the router row (the RouterOS password is
