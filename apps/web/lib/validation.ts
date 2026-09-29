@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_PLAN_SLUG } from "@/lib/pricing";
 
 export const createIspSchema = z.object({
   name: z.string().min(2).max(120),
@@ -6,7 +7,7 @@ export const createIspSchema = z.object({
   phone: z.string().min(7).max(20).optional(),
   email: z.string().email().optional().or(z.literal("")),
   location: z.string().max(200).optional(),
-  planSlug: z.string().default("starter"),
+  planSlug: z.string().default(DEFAULT_PLAN_SLUG),
 });
 
 export type CreateIspInput = z.infer<typeof createIspSchema>;

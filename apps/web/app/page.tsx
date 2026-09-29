@@ -1,11 +1,8 @@
 import Link from "next/link";
+import { RATES, TIERS, TRIAL_DAYS } from "@/lib/pricing";
+import { kes } from "@/lib/format";
 
-const plans = [
-  { name: "Starter", price: "KSh 1,500/mo", blurb: "Up to 200 customers, 2 routers, 500 SMS." },
-  { name: "Professional", price: "KSh 3,500/mo", blurb: "1,000 customers, HotSpot + PPPoE, API." },
-  { name: "Business", price: "KSh 7,500/mo", blurb: "5,000 customers, resellers, inventory." },
-  { name: "Enterprise", price: "KSh 15,000/mo", blurb: "Unlimited scale, SLA, dedicated support." },
-];
+const plans = TIERS.filter((t) => !t.custom);
 
 export default function Home() {
   return (
@@ -34,14 +31,26 @@ export default function Home() {
           <Link className="btn-ghost" href="/login">Sign in</Link>
         </div>
       </section>
-      <section className="mx-auto grid max-w-6xl gap-4 px-4 pb-16 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="mx-auto grid max-w-6xl gap-4 px-4 pb-16 sm:grid-cols-3">
         {plans.map((p) => (
-          <div key={p.name} className="card">
+          <div key={p.slug} className="card">
             <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">{p.name}</p>
-            <p className="mt-1 text-xl font-extrabold">{p.price}</p>
-            <p className="mt-2 text-sm text-slate-600">{p.blurb}</p>
+            <p className="mt-1 text-xl font-extrabold">
+              {kes(p.priceMonthly)}<span className="text-sm font-semibold text-slate-500">/mo</span>
+            </p>
+            <p className="mt-2 text-sm text-slate-600">{p.tagline} — {p.blurb}</p>
           </div>
         ))}
+      </section>
+      <section className="mx-auto max-w-2xl px-4 pb-16 text-center text-sm text-slate-600">
+        <p>
+          KSh {RATES.perRouter / 100} per router each month (capped at KSh {RATES.routerFeeCap / 100}),
+          plus KSh {RATES.perPppoeSub / 100} per PPPoE subscriber and KSh {RATES.perStaticSub / 100} per
+          static subscriber. {TRIAL_DAYS}-day free trial to start.
+        </p>
+        <Link className="mt-3 inline-flex font-semibold text-indigo-600 hover:underline" href="/pricing">
+          See full pricing and FAQs →
+        </Link>
       </section>
     </main>
   );

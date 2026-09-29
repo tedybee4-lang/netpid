@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { createIspSchema, updateIspProfileSchema } from "@/lib/validation";
+import { TRIAL_DAYS } from "@/lib/pricing";
 
 // POST /api/isp — create ISP for the signed-in user (becomes owner).
 // Never trust client isp_id: ISP is derived from the new row + auth session.
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
   const { data: plan } = await svc.from("netpid_plans").select("id").eq("slug", planSlug).maybeSingle();
   if (!plan) return NextResponse.json({ error: "Unknown plan" }, { status: 400 });
 
-  const trialEnds = new Date(Date.now() + 14 * 86400_000).toISOString();
+  const trialEnds = new Date(Date.now() + TRIAL_DAYS * 86400_000).toISOString();
   const { data: isp, error: ispErr } = await svc.from("isps").insert({
     name, slug, phone: phone ?? null, email: email || null, location: location ?? null,
     created_by: user.id, status: "trial", subscription_status: "trialing",

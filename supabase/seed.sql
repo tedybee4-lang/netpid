@@ -8,20 +8,29 @@ insert into public.isp_roles (slug, name, description, permissions) values
  ('reseller','Reseller','Assigned customers only','["reseller.*"]')
 on conflict (slug) do nothing;
 
+-- Pricing mirrors apps/web/lib/pricing.ts (single source of truth).
+-- Usage-based: KSh 500/router/month capped at 2,999, +20/PPPoE sub, +25/static
+-- sub, +0.75/SMS, optional KSh 1,000 one-time installation.
 insert into public.netpid_plans (slug,name,price_monthly,price_yearly,currency,limits,features) values
- ('starter','Starter',150000,1500000,'KES',
-  '{"customers":200,"routers":2,"radius_users":200,"sms":500,"staff":3,"resellers":5}'::jsonb,
-  '["dashboard","customers","payments","sms","basic_reports"]'),
- ('professional','Professional',350000,3500000,'KES',
-  '{"customers":1000,"routers":10,"radius_users":1000,"sms":2000,"staff":10,"resellers":20}'::jsonb,
-  '["everything_in_starter","hotspot","pppoe","vouchers","advanced_reports","api"]'),
- ('business','Business',750000,7500000,'KES',
-  '{"customers":5000,"routers":30,"radius_users":5000,"sms":5000,"staff":30,"resellers":100}'::jsonb,
-  '["everything_in_professional","resellers","inventory","expenses","ai_assistant"]'),
- ('enterprise','Enterprise',1500000,15000000,'KES',
-  '{"customers":-1,"routers":-1,"radius_users":-1,"sms":-1,"staff":-1,"resellers":-1}'::jsonb,
-  '["everything_in_business","sla","dedicated_support","custom_limits"]')
-on conflict (slug) do nothing;
+  ('starter-pilot','Starter Pilot',50000,600000,'KES',
+   '{"routers":1,"customers":50,"radius_users":100,"sms":200,"staff":2,"resellers":0}'::jsonb,
+   '["router_1","mpesa_stk","captive_portal","vouchers","live_dashboard","email_whatsapp_support"]'),
+  ('growth-isp','Growth ISP',150000,1800000,'KES',
+   '{"routers":3,"customers":300,"radius_users":500,"sms":1000,"staff":5,"resellers":10}'::jsonb,
+   '["everything_in_starter_pilot","routers_3","pppoe","hotspot","staff_roles","resellers","freeradius","guided_onboarding"]'),
+  ('scaled-isp','Scaled ISP',299900,3598800,'KES',
+   '{"routers":10,"customers":2000,"radius_users":3000,"sms":5000,"staff":15,"resellers":50}'::jsonb,
+   '["everything_in_growth_isp","routers_10_capped","free_router_config_call","inventory","expenses","advanced_reports","topology","diagnostics","tr069"]'),
+  ('white-label','White-Label',-1,-1,'KES',
+   '{"routers":-1,"customers":-1,"radius_users":-1,"sms":-1,"staff":-1,"resellers":-1}'::jsonb,
+   '["perpetual_licensing","on_premise","custom_integrations","white_label","account_manager","sla","support_24_7"]')
+on conflict (slug) do update set
+  name = excluded.name,
+  price_monthly = excluded.price_monthly,
+  price_yearly = excluded.price_yearly,
+  limits = excluded.limits,
+  features = excluded.features,
+  is_active = true;
 
 insert into public.feature_flags (key,name,description,enabled_default) values
  ('pppoe','PPPoE','PPPoE service management',true),

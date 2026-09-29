@@ -1,13 +1,15 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { DEFAULT_PLAN_SLUG, TIERS } from "@/lib/pricing";
+import { kes } from "@/lib/format";
 
 const steps = ["ISP profile", "Branding & contacts", "Plan", "Done"];
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState({ name: "", slug: "", phone: "", email: "", location: "", planSlug: "starter" });
+  const [form, setForm] = useState({ name: "", slug: "", phone: "", email: "", location: "", planSlug: DEFAULT_PLAN_SLUG });
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -58,10 +60,11 @@ export default function OnboardingPage() {
         {step === 2 && (<>
           <label className="label">NETPID plan (KES)</label>
           <select className="input" value={form.planSlug} onChange={(e) => set("planSlug", e.target.value)}>
-            <option value="starter">Starter — KSh 1,500/mo</option>
-            <option value="professional">Professional — KSh 3,500/mo</option>
-            <option value="business">Business — KSh 7,500/mo</option>
-            <option value="enterprise">Enterprise — KSh 15,000/mo</option>
+            {TIERS.map((t) => (
+              <option key={t.slug} value={t.slug}>
+                {t.name} — {t.custom ? "Custom" : `${kes(t.priceMonthly)}/mo`}
+              </option>
+            ))}
           </select>
           {err && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{err}</p>}
           <div className="flex gap-2">
