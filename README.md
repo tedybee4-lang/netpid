@@ -44,7 +44,16 @@ See `docs/ARCHITECTURE.md`, `docs/PHASES.md`, `docs/FREERADIUS-DEPLOYMENT.md`.
    insert into public.platform_admins (user_id, email, role, is_active)
    values ('<auth.users.id>', 'admin@netpid.app', 'super_admin', true);
    ```
-4. `cd apps/web && cp .env.example .env.local && npm i && npm run dev`
+4. Run the web app from its own directory (Next.js only reads `.env.local` from the app root):
+   ```sh
+   cd apps/web
+   cp .env.example .env.local   # then OPEN it and paste the REAL Supabase keys
+   npm i
+   npm run dev                  # http://localhost:3000 - must log "Environments: .env.local"
+   ```
+   Starting from the repo root (there is no root `package.json`), or leaving the
+   `replace-me` / localhost placeholders from `.env.example` in place, produces
+   "Invalid API key" (HTTP 401 `invalid_api_key`) plus an unstyled page.
 5. Deploy `apps/web` to Vercel. Deploy `network-worker` to VPS (Fly/Render/VPS with systemd). Deploy FreeRADIUS per `docs/FREERADIUS-DEPLOYMENT.md`.
 
 ## Critical rules

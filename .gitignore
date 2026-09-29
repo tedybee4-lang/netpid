@@ -7,6 +7,9 @@ supabase/.temp/
 node_modules/
 apps/web/.next/
 
+# Local dev-server log (scratch output, never committed)
+apps/web/dev_out.txt
+
 # Build / typecheck artefacts
 *.tsbuildinfo
 apps/web/next-env.d.ts
