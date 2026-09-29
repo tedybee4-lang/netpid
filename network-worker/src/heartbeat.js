@@ -91,16 +91,17 @@ function memInfo() {
 }
 
 function diskInfo() {
-  try {
-    const out = execSync("df -P / | awk 'NR==2{print $2,$5}'", { encoding: "utf8" })
-      .trim().split(/\s+/);
-    return {
-      disk_total_gb: Math.round(Number(out[0]) / 1_048_576),
-      disk_percent: Number(String(out[1]).replace("%", "")),
-    };
-  } catch {
-    return {};
-  }
+  // Routed through run() so a missing `df` (Windows, or a minimal container) is
+  // caught quietly instead of writing to stderr on every 45-second beat.
+  const out = run("df -P / | awk 'NR==2{print $2,$5}'");
+  const [blocks, percent] = (out ?? "").trim().split(/\s+/);
+  const total = Number(blocks);
+  const used = Number(String(percent ?? "").replace("%", ""));
+  if (!Number.isFinite(total) || !Number.isFinite(used)) return {};
+  return {
+    disk_percent: used,
+    disk_total_gb: Math.round(total / 1_048_576),
+  };
 }
 
 function osInfo() {

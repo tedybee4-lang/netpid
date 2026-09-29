@@ -1,0 +1,49 @@
+[Unit]
+Description=NETPID network worker (Supabase job poller, RADIUS sync, heartbeat)
+Documentation=https://github.com/tedybee4-lang/netpid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=netpid
+Group=netpid
+WorkingDirectory=/opt/netpid/network-worker
+EnvironmentFile=/etc/netpid/worker.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# The worker is a poller, not a service that must answer instantly: give up
+# after a minute of bad code rather than crash-looping forever and filling the
+# journal.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netpid-worker
+
+# --- Hardening -------------------------------------------------------------
+# Every one of these is a no-op for a process that only talks to Supabase and
+# a local RADIUS socket, and each one removes a path out of the box.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# The worker reads /proc and /sys for the heartbeat metrics. ProtectProc would
+# hide the process table it needs, so it is deliberately NOT set.
+ProtectProc=default
+
+[Install]
+WantedBy=multi-user.target
