@@ -56,6 +56,40 @@ See `docs/ARCHITECTURE.md`, `docs/PHASES.md`, `docs/FREERADIUS-DEPLOYMENT.md`.
    "Invalid API key" (HTTP 401 `invalid_api_key`) plus an unstyled page.
 5. Deploy `apps/web` to Vercel. Deploy `network-worker` to VPS (Fly/Render/VPS with systemd). Deploy FreeRADIUS per `docs/FREERADIUS-DEPLOYMENT.md`.
 
+## Deploying to Vercel
+
+What Vercel runs is exactly the local gate: `npm ci && next build` inside `apps/web`. That build
+is green (56 routes — `/`, `/login`, `/signup`, `/onboarding`, `/reset-password` prerendered;
+everything under `/dashboard/*`, `/portal/[slug]/*`, `/platform-admin` and `/api/*` server-rendered
+on demand, so all runtime reads happen against live env vars, never at build time).
+
+1. <https://vercel.com/new> → import `tedybee4-lang/netpid`.
+2. **Root Directory → `apps/web`** (Settings → General). This is the one setting that CANNOT be
+   committed — `vercel.json` has no such field and the repo deliberately has no root
+   `package.json`. Without it Vercel finds nothing to install. With it, Framework / Build Command /
+   Output Directory auto-detect as `Next.js` / `next build` / `.next`; leave them alone.
+3. **Environment Variables** — the same five names as `apps/web/.env.example`:
+
+   | Key | Value from | Scope |
+   | --- | --- | --- |
+   | `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Project Settings → API → Project URL | all environments (bundled into the browser) |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | same page → `anon` `public` key | all environments (bundled into the browser; public by design, guarded by RLS) |
+   | `SUPABASE_SERVICE_ROLE_KEY` | same page → `service_role` key | Production + Preview, **server only** |
+   | `APP_ENCRYPTION_KEY` | `openssl rand -base64 32` (must decode to exactly 32 bytes — `lib/secrets.ts` enforces this) | Production + Preview, **server only**; must be byte-identical to `network-worker`, or router passwords already stored in the DB cannot be decrypted |
+   | `PAYHERO_WEBHOOK_SECRET` | PayHero dashboard | Production + Preview, **server only** |
+
+   Never prefix the last three with `NEXT_PUBLIC_` — they are read in `lib/supabase/server.ts`,
+   `lib/secrets.ts` and `lib/payment-security.ts`, and `NEXT_PUBLIC_` would bake them into the
+   public browser bundle. Pasting `.env.example` placeholders verbatim is what produced the
+   original "Invalid API key" failure; Vercel has no `.env.local`, so the real values must be
+   entered here.
+4. After the first deploy: Supabase → Authentication → URL Configuration → set the Site URL to the
+   Vercel domain (otherwise reset/magic-link emails point at localhost), and point the PayHero
+   callback at `https://<your-domain>/api/payments/webhook`.
+
+Only `apps/web` belongs on Vercel: `network-worker` needs a long-running host (VPS with systemd,
+Fly, Render) and `freeradius/` runs on your own server — see Quick start step 5.
+
 ## Critical rules
 
 - Every ISP-owned table has `isp_id uuid not null`. RLS enforced, never frontend filtering.
