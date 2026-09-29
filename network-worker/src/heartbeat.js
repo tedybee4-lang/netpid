@@ -1,4 +1,4 @@
-// Worker → NETPID heartbeat.
+// Worker -> NETPID heartbeat.
 //
 // Reports resource metrics and service state so the Super Admin console can
 // tell ONLINE from DELAYED from OFFLINE without an active SSH session.
@@ -16,6 +16,7 @@ const HEARTBEAT_URL =
   process.env.NETPID_HEARTBEAT_URL ?? "https://netpid.vercel.app/api/worker/heartbeat";
 const SECRET = process.env.WORKER_HEARTBEAT_SECRET;
 const SERVER_ID = process.env.NETPID_SERVER_ID;
+const INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 45_000);
 
 // A stable per-host id. Prefers an explicit env value so a systemd unit can pin
 // it; otherwise derives from the machine-id, which actually identifies the box
@@ -34,6 +35,15 @@ function resolveWorkerId() {
 const WORKER_ID = resolveWorkerId();
 const WORKER_VERSION = process.env.npm_package_version ?? "0.1.0";
 
+/** A short command that never throws. Returns trimmed stdout, or null. */
+function run(cmd) {
+  try {
+    return execSync(cmd, { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a systemd unit is LOADED. This deliberately does not claim the unit
  * is *running* — liveness is reported separately by the console's SSH probe, so
@@ -46,6 +56,24 @@ function unitLoaded(unit) {
   } catch {
     return null; // absent: report "unknown", not "inactive"
   }
+}
+
+/**
+ * True/false for an installed service, and undefined when the unit is not
+ * installed at all — "unknown" must never be flattened into "stopped".
+ */
+function serviceActive(unit) {
+  const files = run(`systemctl list-unit-files ${unit}.service --no-legend --no-pager`);
+  if (!files || !files.includes(`${unit}.service`)) return undefined;
+  return run(`systemctl is-active ${unit}.service --no-pager`) === "active";
+}
+
+function firstService(...units) {
+  for (const u of units) {
+    const v = serviceActive(u);
+    if (v !== undefined) return v;
+  }
+  return undefined;
 }
 
 function memInfo() {
@@ -68,6 +96,24 @@ function diskInfo() {
       .trim().split(/\s+/);
     return {
       disk_total_gb: Math.round(Number(out[0]) / 1_048_576),
+      disk_percent: Number(String(out[1]).replace("%", "")),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function osInfo() {
+  const out = {};
+  if (os.platform() === "linux") {
+    out.kernel = run("uname -r") ?? undefined;
+    try {
+      const rel = fs.readFileSync("/etc/os-release", "utf8");
+      out.os_name = /^PRETTY_NAME="?([^"\n]+)"?/m.exec(rel)?.[1];
+    } catch { /* minimal images have no os-release */ }
+  }
+  return out;
+}
 
 // Delta-based CPU: reading /proc/stat twice is the only dependency-free way.
 // The first sample primes the baseline and reports nothing.
@@ -94,32 +140,53 @@ function sampleCpu() {
 
 export function buildHeartbeat(jobsProcessed = 0) {
   const load = os.loadavg()[0];
-  return {
+  const mem = memInfo();
+  const disk = diskInfo();
+  // Every top-level key here is declared in the zod schema of
+  // apps/web/app/api/worker/heartbeat/route.ts. Anything extra would be silently
+  // stripped on arrival, so totals go in `detail` instead of guessing.
+  const payload = {
     server_id: SERVER_ID,
     worker_id: WORKER_ID,
     worker_version: WORKER_VERSION,
     status: "ok",
-    cpu_percent: sampleCpu(),
-    uptime_seconds: Math.floor(os.uptime()),
-    os_name: `${os.type()} ${os.release()}`,
+    uptime_seconds: Math.round(os.uptime()),
     jobs_processed: jobsProcessed,
-    radius_running: unitLoaded("freeradius.service"),
-    wireguard_active: unitLoaded("wg-quick@netpid.service") ?? unitLoaded("wg0.service"),
-    firewall_active: unitLoaded("ufw.service") ?? unitLoaded("nftables.service"),
-    ...memInfo(),
-    ...diskInfo(),
-    detail: { load_avg_1: load.toFixed(2), node: os.hostname() },
+    mem_percent: mem.mem_percent,
+    disk_percent: disk.disk_percent,
+    ...osInfo(),
   };
+
+  const cpu = sampleCpu();
+  if (cpu !== undefined) payload.cpu_percent = cpu;
+
+  // Only a DEFINED service state is sent. An omitted key means "unknown" in the
+  // console; a hardcoded false would read as "stopped" and raise a false alarm.
+  const radius = firstService("freeradius3", "freeradius");
+  if (radius !== undefined) payload.radius_running = radius;
+
+  const wg = run("wg show");
+  if (wg !== null) payload.wireguard_active = wg.length > 0;
+
+  const fw = firstService("ufw", "nftables", "firewalld");
+  if (fw !== undefined) payload.firewall_active = fw;
+
+  const detail = { load1: load, mem_total_mb: mem.mem_total_mb, disk_total_gb: disk.disk_total_gb };
+  if (unitLoaded("netpid-worker.service") !== null) detail.worker_unit = "netpid-worker.service";
+  payload.detail = detail;
+  return payload;
 }
 
 let timer = null;
-let sent = 0;
 let consecutiveFailures = 0;
+let sent = 0;
 
 export async function sendHeartbeat() {
-  // Fail closed and quietly: an unconfigured heartbeat must not spam the log
-  // or, worse, silently pretend to be reporting.
-  if (!SECRET || !SERVER_ID) return { ok: false, skipped: true };
+  if (!SERVER_ID || !SECRET) {
+    // Do not pretend to be healthy when the worker was never wired to the
+    // console — silence here is honest, a fake "ok" beat is not.
+    return { ok: false, error: "heartbeat not configured" };
+  }
   try {
     const res = await fetch(HEARTBEAT_URL, {
       method: "POST",
@@ -162,69 +229,3 @@ export function stopHeartbeat() {
 
 export { WORKER_ID, WORKER_VERSION };
 
-      disk_percent: Number(String(out[1]).replace("%", "")),
-    };
-  } catch {
-    return {};
-  }
-}
-
-const INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 45_000);
-
-// A stable per-host id. Prefers an explicit env value so a systemd unit can pin
-// it; otherwise derives from the machine-id, which actually identifies the box
-// and is stable across restarts.
-function resolveWorkerId() {
-  if (process.env.WORKER_ID) return process.env.WORKER_ID;
-  for (const p of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
-    try {
-      const v = fs.readFileSync(p, "utf8").trim();
-      if (v) return `w-${v.slice(0, 12)}`;
-    } catch { /* not present on every platform */ }
-  }
-  return `w-${crypto.createHash("sha256").update(os.hostname()).digest("hex").slice(0, 12)}`;
-}
-
-const WORKER_ID = resolveWorkerId();
-const WORKER_VERSION = process.env.npm_package_version ?? "0.1.0";
-
-/**
- * Whether a systemd unit is LOADED. This deliberately does not claim the unit
- * is *running* — liveness is reported separately by the console's SSH probe, so
- * a unit that is loaded but dead is not misreported as healthy here.
- */
-function unitLoaded(unit) {
-  try {
-    fs.accessSync(`/etc/systemd/system/${unit}`);
-    return true;
-  } catch {
-    return null; // absent: report "unknown", not "inactive"
-  }
-}
-
-function memInfo() {
-  try {
-    const m = fs.readFileSync("/proc/meminfo", "utf8");
-    const total = Number(/MemTotal:\s+(\d+)/.exec(m)?.[1]) / 1024;
-    const avail = Number(/MemAvailable:\s+(\d+)/.exec(m)?.[1]) / 1024;
-    return {
-      mem_total_mb: Math.round(total),
-      mem_percent: total > 0 ? Math.round(((total - avail) / total) * 100) : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function diskInfo() {
-  try {
-    const out = execSync("df -P / | awk 'NR==2{print $2,$5}'", { encoding: "utf8" })
-      .trim().split(/\s+/);
-    return {
-      disk_total_gb: Math.round(Number(out[0]) / 1_048_576),
-      disk_percent: Number(String(out[1]).replace("%", "")),
-    };
-  } catch {
-    return {};
-  }
-}
