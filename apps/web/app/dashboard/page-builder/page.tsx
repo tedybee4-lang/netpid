@@ -21,6 +21,25 @@ const EMPTY: PortalSettings = {
   portal_privacy: "", payment_instructions: "", coverage_info: "",
 };
 
+/**
+ * Ready-made starting points.
+ *
+ * Asking an operator to pick a hex code is how you get #808080 portals. These
+ * are ordered so the first few are the ones that actually read well on a cheap
+ * phone screen over a weak connection: high contrast, dark text on light
+ * ground, nothing that relies on a gradient being visible.
+ */
+const PORTAL_THEMES: { name: string; color: string; note: string }[] = [
+  { name: "Indigo", color: "#4F46E5", note: "NETPID default" },
+  { name: "M-Pesa green", color: "#047857", note: "Matches Safaricom" },
+  { name: "Ocean", color: "#0E7490", note: "Cool and calm" },
+  { name: "Sunset", color: "#C2410C", note: "Warm, high contrast" },
+  { name: "Plum", color: "#7E22CE", note: "Distinctive" },
+  { name: "Graphite", color: "#1F2937", note: "Neutral, serious" },
+  { name: "Forest", color: "#166534", note: "Deep green" },
+  { name: "Royal", color: "#1D4ED8", note: "Trustworthy blue" },
+];
+
 export default function PageBuilderPage() {
   const [isp, setIsp] = useState<IspInfo | null>(null);
   const [form, setForm] = useState<PortalSettings>(EMPTY);
@@ -77,6 +96,14 @@ export default function PageBuilderPage() {
     return <main className="mx-auto max-w-4xl px-4 py-8 text-slate-400">Loading page builder…</main>;
   }
 
+  // Live preview driven by the UNSAVED form state, so the operator sees the
+  // result of a colour swap before committing it. A "Preview portal" link that
+  // only ever shows the last saved state forces save-then-check, which is how a
+  // portal gets left looking wrong for an hour.
+  const previewBrand = /^#[0-9a-fA-F]{6}$/.test(form.brand_color) ? form.brand_color : "#4F46E5";
+  const previewTitle = (form.portal_title ?? "").trim()
+    || (isp ? `${isp.name} internet` : "Your ISP internet");
+
   return (
     <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -97,7 +124,8 @@ export default function PageBuilderPage() {
       {err && <p className="err-box mt-4">{err}</p>}
       {saved && <p className="ok-box mt-4">Saved. The public portal updates immediately.</p>}
 
-      <form onSubmit={save} className="mt-4 space-y-4">
+      <div className="mt-4 grid items-start gap-4 lg:grid-cols-3">
+      <form onSubmit={save} className="space-y-4 lg:col-span-2">
         <section className="card space-y-3">
           <h2 className="panel-title">Branding</h2>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -118,6 +146,37 @@ export default function PageBuilderPage() {
                 value={form.portal_title ?? ""}
                 onChange={(e) => set("portal_title", e.target.value)} />
             </div>
+          </div>
+
+          <div>
+            <p className="label">Start from a theme</p>
+            <div className="flex flex-wrap gap-2">
+              {PORTAL_THEMES.map((t) => {
+                const active = form.brand_color.toLowerCase() === t.color.toLowerCase();
+                return (
+                  <button
+                    key={t.name}
+                    type="button"
+                    onClick={() => set("brand_color", t.color)}
+                    title={t.note}
+                    aria-pressed={active}
+                    className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
+                      active
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-700 hover:border-slate-400"
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="h-4 w-4 rounded-full border border-black/10"
+                      style={{ backgroundColor: t.color }}
+                    />
+                    {t.name}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="hint">Pick one to set the colour, then fine-tune it with the swatch above.</p>
           </div>
         </section>
 
@@ -162,6 +221,56 @@ export default function PageBuilderPage() {
           {isp && <a className="btn-ghost" href={`/portal/${isp.slug}`} target="_blank" rel="noreferrer">Preview ↗</a>}
         </div>
       </form>
+
+        {/* A phone-shaped mock of what the customer will actually see. Sized and
+            proportioned like a handset on purpose: a desktop-width preview
+            hides the exact problem that matters here, which is text and buttons
+            being cramped on a small screen. */}
+        <aside className="space-y-3 lg:sticky lg:top-6">
+          <div className="card p-3">
+            <p className="label">Live preview · not saved yet</p>
+            <div className="mt-2 overflow-hidden rounded-2xl border border-slate-300">
+              <div
+                className="px-4 py-4 text-white"
+                style={{ backgroundColor: previewBrand }}
+              >
+                <p className="text-[10px] font-bold uppercase tracking-widest opacity-80">
+                  {isp?.name ?? "Your ISP"}
+                </p>
+                <p className="mt-0.5 text-sm font-black leading-tight">{previewTitle}</p>
+              </div>
+              <div className="space-y-2 bg-slate-50 p-3">
+                <div className="rounded-lg border border-slate-200 bg-white p-2">
+                  <p className="text-[10px] font-semibold text-slate-500">Hotspot 5 Mbps</p>
+                  <p className="text-sm font-black tnum">KSh 1,200 <span className="text-[10px] font-medium text-slate-500">/ month</span></p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-2">
+                  <p className="text-[10px] font-semibold text-slate-500">Hotspot 10 Mbps</p>
+                  <p className="text-sm font-black tnum">KSh 2,000 <span className="text-[10px] font-medium text-slate-500">/ month</span></p>
+                </div>
+                <div
+                  className="rounded-lg py-2 text-center text-xs font-black text-white"
+                  style={{ backgroundColor: previewBrand }}
+                >
+                  Buy with M-Pesa
+                </div>
+                <p className="pt-1 text-center text-[10px] text-slate-500">
+                  {isp ? "Pay to your M-Pesa Till/PayBill" : "Support: —"}
+                </p>
+              </div>
+            </div>
+            <p className="hint">
+              Package names and prices shown are placeholders — they are rendered
+              from the real published packages on your live portal.
+            </p>
+          </div>
+          {isp && (
+            <a className="btn-ghost w-full justify-center" href={`/portal/${isp.slug}`} target="_blank" rel="noreferrer">
+              Open the real portal ↗
+            </a>
+          )}
+        </aside>
+      </div>
     </main>
   );
 }
