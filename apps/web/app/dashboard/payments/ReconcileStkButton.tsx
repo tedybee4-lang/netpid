@@ -26,7 +26,7 @@ export default function ReconcileStkButton({ paymentId }: { paymentId: string })
           ? "Already settled — nothing to do."
           : `Daraja reports this payment completed. Service is active${j.expiry ? ` until ${new Date(j.expiry).toLocaleDateString()}` : ""}.`);
       } else {
-        setMsg(j.message ?? `Daraja says: ${j.transaction_status ?? "not settled yet"}.`);
+        setMsg(j.message ?? `Safaricom result code ${j.result_code ?? "none"}.`);
       }
       router.refresh();
     } catch {

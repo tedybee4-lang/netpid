@@ -89,67 +89,82 @@ export async function sendStkPush(
 }
 
 export type DarajaStatusResult = {
-  /** "0" = accepted the query request. NOT the payment outcome. */
+  /** "0" = the QUERY was accepted. NOT the payment outcome. */
   responseCode: string;
   responseDescription: string;
-  /** null when Daraja did not report a status. */
-  transactionStatus: string | null;
-  checkoutRequestId: string | null;
-  merchantRequestId: string | null;
-  /** ResultCode from the underlying STK push, when Daraja echoes it. */
+  /**
+   * The STK push's own result, using the same vocabulary as the callback.
+   * 0 = the customer paid. Non-zero = it did not (1032 = cancelled, etc).
+   * null = Daraja did not report one, which must never be read as success.
+   */
   resultCode: number | null;
   resultDesc: string | null;
+  checkoutRequestId: string | null;
+  merchantRequestId: string | null;
 };
 
 function readStatus(body: Record<string, unknown>): DarajaStatusResult {
-  const num = (v: unknown) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const raw = body.ResultCode;
+  const num = raw === undefined || raw === null || raw === "" ? null : Number(raw);
   return {
     responseCode: String(body.ResponseCode ?? ""),
     responseDescription: String(body.ResponseDescription ?? ""),
-    transactionStatus: body.TransactionStatus ? String(body.TransactionStatus) : null,
+    resultCode: Number.isFinite(num) ? num : null,
+    resultDesc: body.ResultDesc ? String(body.ResultDesc) : null,
     checkoutRequestId: body.CheckoutRequestID ? String(body.CheckoutRequestID) : null,
     merchantRequestId: body.MerchantRequestID ? String(body.MerchantRequestID) : null,
-    resultCode: num(body.ResultCode),
-    resultDesc: body.ResultDesc ? String(body.ResultDesc) : null,
   };
 }
 
 /**
- * M-Pesa Express Transaction Status Query.
+ * Lipa na M-Pesa Online — STK transaction status.
  *
- * This is the recovery path for a callback that never arrived — the request was
- * accepted by Daraja (CheckoutRequestID exists) but the handset was offline, the
- * user walked away, or Safaricom's notification was dropped. Querying is safe
- * and read-only against Daraja, so an operator can reconcile a stuck payment
- * without inventing a manual receipt.
+ * This is the reconciliation path for a callback that never arrived: the request
+ * was accepted by Daraja (a CheckoutRequestID exists) but the handset was
+ * offline, the customer walked away, or the notification was dropped. The payment
+ * then sits at 'pending' forever while the customer has already paid.
  *
- * It is deliberately NOT a substitute for the callback: only the activation
- * rules in the callback route decide that money became service.
+ * ENDPOINT: /mpesa/stkpushquery/v1/query. NOT the generic
+ * /mpesa/transactionstatus/v1/query, which is a different product with a
+ * different (Initiator-style) contract that this app is not provisioned for and
+ * which answers "Invalid IdentifierType" / "Invalid Initiator". The one that
+ * answers for an STK CheckoutRequestID is stkpushquery.
+ *
+ * AUTH: the same shape as the STK push itself - BusinessShortCode plus a
+ * Password of base64(shortcode + passkey + timestamp). There is no
+ * InitiatorSecurityCredential on this endpoint.
+ *
+ * OUTCOME: carried by ResultCode, the same vocabulary the callback uses. 0 means
+ * the customer paid. A successful HTTP response on its own means only that the
+ * query was accepted, so nothing here may settle a payment without an explicit
+ * ResultCode of 0.
+ *
+ * It is deliberately NOT a substitute for the callback's amount check: this
+ * endpoint does not return the amount, so it can only ever confirm that Daraja
+ * recorded this request as settled, never re-price it.
  */
 export async function queryStkTransactionStatus(
   c: DarajaCreds,
   opts: { transactionId: string },
 ): Promise<DarajaStatusResult> {
   const token = await accessToken(c);
-  const res = await fetch(`${baseUrl(c.environment)}/mpesa/transactionstatus/v1/query`, {
+  const ts = timestamp();
+  const password = Buffer.from(`${c.shortcode}${c.passkey}${ts}`).toString("base64");
+  const res = await fetch(`${baseUrl(c.environment)}/mpesa/stkpushquery/v1/query`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({
-      InitiatorSecurityCredential: c.passkey,
-      SecurityCredential: c.passkey,
-      TransactionID: opts.transactionId,
-      // REQUIRED by Daraja: without it the query is rejected with
-      // 400.002.02 "Invalid IdentifierType". The value names which field above
-      // identifies the transaction.
-      IdentifierType: "TransactionID",
-      ShortCode: c.shortcode,
+      BusinessShortCode: c.shortcode,
+      Password: password,
+      Timestamp: ts,
+      CheckoutRequestID: opts.transactionId,
     }),
     signal: AbortSignal.timeout(20_000),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    // This endpoint answers errors with errorMessage/errorCode, NOT
-    // ResponseDescription like the STK push does.
+  if (!res.ok || body.ResponseCode !== "0") {
+    // Errors here arrive as errorMessage/errorCode; a rejected QUERY is not a
+    // failed PAYMENT and must not be reported as one.
     throw new Error(String(
       body.errorMessage ?? body.ResponseDescription ?? `Daraja transaction status HTTP ${res.status}`,
     ));
@@ -157,21 +172,14 @@ export async function queryStkTransactionStatus(
   return readStatus(body);
 }
 
-/** True when a status query says the money definitively settled. */
+/** True only when Daraja reports the push itself completed. */
 export function statusSucceeded(s: DarajaStatusResult): boolean {
-  return s.transactionStatus?.toLowerCase() === "completed";
+  return s.resultCode === 0;
 }
 
-/** True when Daraja says the STK push definitively failed and will not settle. */
+/** True when Daraja reports the push definitively did not complete. */
 export function statusFailed(s: DarajaStatusResult): boolean {
-  const t = s.transactionStatus?.toLowerCase();
-  return t === "failed" || t === "reversed" || t === "reversed earlier";
-}
-
-/** True when the request is accepted but the payment has not settled yet. */
-export function statusPending(s: DarajaStatusResult): boolean {
-  const t = s.transactionStatus?.toLowerCase();
-  return t === "in progress" || t === "pending" || t === "queued";
+  return s.resultCode !== null && s.resultCode !== 0;
 }
 
 export type DarajaCallback = {

@@ -3,7 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { resolveIsp } from "@/lib/isp";
 import { getDarajaCreds } from "@/lib/daraja";
 import {
-  queryStkTransactionStatus, statusSucceeded, statusFailed, statusPending,
+  queryStkTransactionStatus, statusSucceeded, statusFailed,
 } from "@/lib/daraja-push";
 import { checkRateLimit } from "@/lib/secrets";
 import { applyConfirmedPayment } from "@/lib/payments-activate";
@@ -89,15 +89,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const audit = (outcome: string, detail: Record<string, unknown>) => svc.from("audit_logs").insert({
     actor_id: r.user.id, actor_type: "user", isp_id: r.ispId,
     action: "payment_status_query", resource: "payments", resource_id: p.id,
-    metadata: { outcome, transaction_status: status.transactionStatus, ...detail },
+    metadata: { outcome, result_code: status.resultCode, ...detail },
   });
 
-  if (statusPending(status) || (!statusSucceeded(status) && !statusFailed(status) && !status.transactionStatus)) {
-    await audit("still_pending", { result_code: status.resultCode });
+  if (status.resultCode === null) {
+    // Daraja accepted the query but reported no outcome. That is not evidence of
+    // payment, so the row stays pending and nothing is activated.
+    await audit("no_result_reported", { response_code: status.responseCode });
     return NextResponse.json({
       ok: true, settled: false,
-      transaction_status: status.transactionStatus,
-      message: "Daraja has not settled this payment yet. Leave it pending and check again shortly.",
+      result_code: null,
+      message: "Safaricom accepted the query but reported no result for this request. "
+        + "Leave it pending and check again shortly.",
     });
   }
 
@@ -107,12 +110,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const { data: failed } = await svc.from("payments")
       .update({ status: "failed" })
       .eq("id", p.id).eq("status", "pending").select("id");
-    await audit("failed", { result_code: status.resultCode, result_desc: status.resultDesc });
+    await audit("failed", { result_desc: status.resultDesc });
     return NextResponse.json({
       ok: true, settled: false,
-      transaction_status: status.transactionStatus,
+      result_code: status.resultCode,
+      result_desc: status.resultDesc,
       already: failed?.length ? null : "processed",
-      message: "Daraja reports this payment did not complete. The customer can retry or pay manually.",
+      message: status.resultDesc
+        ? `Safaricom reports this payment did not complete: ${status.resultDesc}`
+        : "Safaricom reports this payment did not complete. The customer can retry or pay manually.",
     });
   }
 
@@ -134,6 +140,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   });
   await audit("activated", { result_code: status.resultCode, result_desc: status.resultDesc });
 
-  return NextResponse.json({ ok: true, settled: true, transaction_status: status.transactionStatus, expiry });
+  return NextResponse.json({ ok: true, settled: true, result_code: status.resultCode, expiry });
 }
 
