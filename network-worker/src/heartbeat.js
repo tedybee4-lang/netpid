@@ -139,6 +139,39 @@ function sampleCpu() {
   }
 }
 
+/**
+ * Whether a WireGuard interface exists and is up.
+ *
+ * `wg show` needs CAP_NET_ADMIN, and the worker deliberately runs as the
+ * unprivileged `netpid` user — so a wg-based check could NEVER succeed and the
+ * console showed "unknown" for a tunnel that was working. /sys/class/net is
+ * world readable and answers the same question.
+ *
+ * Returns undefined when there is no wg interface at all, so an unconfigured
+ * box is reported as unknown rather than as a broken tunnel.
+ */
+function wireguardState() {
+  let entries;
+  try {
+    entries = fs.readdirSync("/sys/class/net");
+  } catch {
+    return undefined; // not Linux
+  }
+  const ifaces = entries.filter((n) => n.startsWith("wg"));
+  if (!ifaces.length) return undefined;
+  return ifaces.some((n) => {
+    try {
+      // IFF_UP is bit 0. `operstate` is NOT usable here: a WireGuard interface
+      // reports "unknown" even when fully established, because it has no
+      // carrier in the ARP sense.
+      const flags = parseInt(fs.readFileSync(`/sys/class/net/${n}/flags`, "utf8").trim(), 16);
+      return (flags & 0x1) === 0x1;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function buildHeartbeat(jobsProcessed = 0) {
   const load = os.loadavg()[0];
   const mem = memInfo();
@@ -166,8 +199,8 @@ export function buildHeartbeat(jobsProcessed = 0) {
   const radius = firstService("freeradius3", "freeradius");
   if (radius !== undefined) payload.radius_running = radius;
 
-  const wg = run("wg show");
-  if (wg !== null) payload.wireguard_active = wg.length > 0;
+  const wg = wireguardState();
+  if (wg !== undefined) payload.wireguard_active = wg;
 
   const fw = firstService("ufw", "nftables", "firewalld");
   if (fw !== undefined) payload.firewall_active = fw;

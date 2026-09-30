@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { readFileSync } from "node:fs";
 
 const SECRET = "s3cr3t-heartbeat-shared-value";
 const SERVICE_ROLE = "super-secret-service-role-key";
@@ -54,6 +55,15 @@ test.after(() => server.close());
 const { buildHeartbeat, sendHeartbeat, startHeartbeat, stopHeartbeat, WORKER_ID, WORKER_VERSION } =
   await import("../src/heartbeat.js");
 
+// Strips comments so an assertion about CODE cannot be satisfied or broken by
+// prose that merely names a command. Block comments go first: the JSDoc headers
+// are multi-line, and a per-line pass cannot touch them.
+function codeOf(file) {
+  return readFileSync(new URL(file, import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1");
+}
+
 test("every payload key is declared in the API schema", () => {
   buildHeartbeat();
   const beat = buildHeartbeat();
@@ -90,6 +100,20 @@ test("a missing service is omitted, never reported as stopped", () => {
   for (const k of ["radius_running", "wireguard_active", "firewall_active"]) {
     assert.ok(beat[k] === undefined || typeof beat[k] === "boolean");
   }
+});
+
+// `wg show` needs CAP_NET_ADMIN, and the worker runs as the unprivileged
+// netpid user, so a wg-based check could NEVER succeed: the console reported
+// "unknown" for a tunnel that was up and carrying traffic. The interface flags
+// in /sys/class/net answer the same question with no privilege at all.
+test("wireguard is detected from /sys, never by shelling out to wg", () => {
+  const code = codeOf("../src/heartbeat.js");
+  assert.doesNotMatch(code, /\bwg\s+show\b/, "`wg show` cannot run as the netpid user");
+  assert.match(code, /readdirSync\("\/sys\/class\/net"\)/);
+  assert.match(code, /flags/, "IFF_UP is bit 0 of the interface flags file");
+  // operstate is useless for WireGuard - it reports "unknown" even when the
+  // tunnel is fully established - so the flags file is the only correct source.
+  assert.doesNotMatch(code, /[`"']operstate[`"']/, "never read the operstate file");
 });
 
 test("no env value or credential appears anywhere in the serialised payload", () => {
