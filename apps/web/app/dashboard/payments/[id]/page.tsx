@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { dateOnly, kes, statusTone } from "@/lib/format";
 import PendingClaimActions from "../PendingClaimActions";
+import ReconcileStkButton from "../ReconcileStkButton";
 
 // One transaction, plus the receipt and invoice written for it.
 //
@@ -44,6 +45,12 @@ export default async function PaymentDetail({ params }: { params: Promise<{ id: 
   const invoice = invoiceRes.data?.[0] ?? null;
   const recon = reconRes.data;
   const isClaim = payment.status === "pending" && payment.provider === "manual";
+  // A pending Daraja push with a CheckoutRequestID is the only case where an
+  // operator can ask Safaricom what happened. Anything else is settled by the
+  // callback, or confirmed by hand as a manual claim.
+  const canReconcile = payment.status === "pending"
+    && payment.provider === "daraja"
+    && Boolean(payment.checkout_request_id);
 
   const rows: { label: string; value: React.ReactNode }[] = [
     { label: "Amount", value: <span className="font-black tnum">{kes(payment.amount)}</span> },
@@ -91,6 +98,22 @@ export default async function PaymentDetail({ params }: { params: Promise<{ id: 
               </p>
             </div>
             <PendingClaimActions paymentId={payment.id} />
+          </div>
+        </div>
+      )}
+
+      {canReconcile && (
+        <div className="card mt-4 border-sky-300 bg-sky-50">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="font-bold text-sky-900">Waiting on Safaricom</p>
+              <p className="mt-1 max-w-xl text-sm text-sky-800">
+                This STK push was accepted but its callback has not arrived. You can ask
+                Safaricom for the real status — it only reports what Safaricom itself
+                recorded, so it cannot invent a payment.
+              </p>
+            </div>
+            <ReconcileStkButton paymentId={payment.id} />
           </div>
         </div>
       )}

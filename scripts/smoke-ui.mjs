@@ -186,7 +186,23 @@ async function main() {
   check(`ISP session refused by /api/admin/announcements (got ${adminApi.status})`,
     adminApi.status === 403, (await adminApi.text()).slice(0, 80));
 
-  // ---- security: no secrets in rendered markup -------------------------
+  // ---- Daraja reconciliation route -------------------------------------
+  // Proves the new status route is live, is tenant-scoped (a payment id that is
+  // not in this ISP is a 404, not someone else's data), and activates nothing.
+  console.log("--- daraja status reconciliation ---");
+  const statusRoute = await fetch(`${APP}/api/payments/00000000-0000-0000-0000-000000000000/status`, {
+    method: "POST", headers: { cookie }, signal: AbortSignal.timeout(60_000),
+  });
+  check(`status route is live and ISP-scoped (got ${statusRoute.status})`,
+    statusRoute.status === 404, (await statusRoute.text()).slice(0, 80));
+
+  const statusNoAuth = await fetch(`${APP}/api/payments/00000000-0000-0000-0000-000000000000/status`, {
+    method: "POST", signal: AbortSignal.timeout(60_000),
+  });
+  check(`status route refuses an unauthenticated caller (got ${statusNoAuth.status})`,
+    statusNoAuth.status === 401, (await statusNoAuth.text()).slice(0, 80));
+
+  // ---- secret leakage: no sensitive data in logs -------------------------
   console.log("--- secret leakage ---");
   for (const p of ["/dashboard/network/routers/new", "/dashboard/settings", "/dashboard/sms"]) {
     const r = await get(p);

@@ -88,6 +88,84 @@ export async function sendStkPush(
   return { merchantRequestId: body.MerchantRequestID ?? "", checkoutRequestId: body.CheckoutRequestID };
 }
 
+export type DarajaStatusResult = {
+  /** "0" = accepted the query request. NOT the payment outcome. */
+  responseCode: string;
+  responseDescription: string;
+  /** null when Daraja did not report a status. */
+  transactionStatus: string | null;
+  checkoutRequestId: string | null;
+  merchantRequestId: string | null;
+  /** ResultCode from the underlying STK push, when Daraja echoes it. */
+  resultCode: number | null;
+  resultDesc: string | null;
+};
+
+function readStatus(body: Record<string, unknown>): DarajaStatusResult {
+  const num = (v: unknown) => (v === undefined || v === null || v === "" ? null : Number(v));
+  return {
+    responseCode: String(body.ResponseCode ?? ""),
+    responseDescription: String(body.ResponseDescription ?? ""),
+    transactionStatus: body.TransactionStatus ? String(body.TransactionStatus) : null,
+    checkoutRequestId: body.CheckoutRequestID ? String(body.CheckoutRequestID) : null,
+    merchantRequestId: body.MerchantRequestID ? String(body.MerchantRequestID) : null,
+    resultCode: num(body.ResultCode),
+    resultDesc: body.ResultDesc ? String(body.ResultDesc) : null,
+  };
+}
+
+/**
+ * M-Pesa Express Transaction Status Query.
+ *
+ * This is the recovery path for a callback that never arrived — the request was
+ * accepted by Daraja (CheckoutRequestID exists) but the handset was offline, the
+ * user walked away, or Safaricom's notification was dropped. Querying is safe
+ * and read-only against Daraja, so an operator can reconcile a stuck payment
+ * without inventing a manual receipt.
+ *
+ * It is deliberately NOT a substitute for the callback: only the activation
+ * rules in the callback route decide that money became service.
+ */
+export async function queryStkTransactionStatus(
+  c: DarajaCreds,
+  opts: { transactionId: string },
+): Promise<DarajaStatusResult> {
+  const token = await accessToken(c);
+  const res = await fetch(`${baseUrl(c.environment)}/mpesa/transactionstatus/v1/query`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      InitiatorSecurityCredential: c.passkey,
+      SecurityCredential: c.passkey,
+      TransactionID: opts.transactionId,
+      ShortCode: c.shortcode,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    throw new Error(String(body.ResponseDescription ?? `Daraja transaction status HTTP ${res.status}`));
+  }
+  return readStatus(body);
+}
+
+/** True when a status query says the money definitively settled. */
+export function statusSucceeded(s: DarajaStatusResult): boolean {
+  return s.transactionStatus?.toLowerCase() === "completed";
+}
+
+/** True when Daraja says the STK push definitively failed and will not settle. */
+export function statusFailed(s: DarajaStatusResult): boolean {
+  const t = s.transactionStatus?.toLowerCase();
+  return t === "failed" || t === "reversed" || t === "reversed earlier";
+}
+
+/** True when the request is accepted but the payment has not settled yet. */
+export function statusPending(s: DarajaStatusResult): boolean {
+  const t = s.transactionStatus?.toLowerCase();
+  return t === "in progress" || t === "pending" || t === "queued";
+}
+
 export type DarajaCallback = {
   resultCode: number; resultDesc: string;
   merchantRequestId: string; checkoutRequestId: string;
