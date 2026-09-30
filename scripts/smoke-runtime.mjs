@@ -235,9 +235,23 @@ async function run() {
   const providerRows = await countRows(`payment_providers`);
   const darajaRows = await countRows(`payment_providers?provider=eq.daraja`);
   const payheroRows = await countRows(`payment_providers?provider=eq.payhero`);
-  check(`payment_providers = 0 rows (got ${providerRows})`, providerRows === 0);
-  check(`no daraja provider rows (got ${darajaRows})`, darajaRows === 0);
+  const darajaLive = (darajaRows ?? 0) > 0;
+
+  // Daraja is PER-ISP configuration. "0 provider rows" was only ever true before
+  // an ISP saved credentials, so asserting it would make this suite wrong the
+  // moment the integration is actually switched on. What must hold in BOTH states
+  // is that no secret is ever stored in the clear and no legacy provider returns.
+  console.log(`info payment provider state: total=${providerRows} daraja=${darajaRows} payhero=${payheroRows}`
+    + ` -> Daraja ${darajaLive ? "CONFIGURED" : "unconfigured"}`);
   check(`no payhero provider rows (got ${payheroRows})`, payheroRows === 0);
+
+  const { json: credRows } = await rest(`payment_provider_credentials?select=encrypted_secret`);
+  const envelopes = credRows ?? [];
+  check(`every stored credential is an encrypted envelope (${envelopes.length} row(s))`,
+    envelopes.every((c) => typeof c.encrypted_secret === "string" && c.encrypted_secret.startsWith("v1:")),
+    envelopes.length ? "" : "no credential stored");
+  check(`no raw Daraja secret sits in the credential table`,
+    !envelopes.some((c) => /"consumer_secret"\s*:\s*"/.test(c.encrypted_secret)));
 
   // ---- 1. customer portal buy flow -------------------------------------
   if (!pkg) {
@@ -255,29 +269,51 @@ async function run() {
     });
     const body = await res.json().catch(() => null);
 
-    check(`portal buy returns 422 (got ${res.status})`, res.status === 422);
-    check(
-      `body carries an "error" the portal renders (BuyForm reads j.error)`,
-      typeof body?.error === "string" && body.error.length > 0,
-      JSON.stringify(body?.error ?? null),
-    );
-    check(`daraja_configured === false (got ${body?.daraja_configured})`, body?.daraja_configured === false);
-    check(`manual_available === true (got ${body?.manual_available})`, body?.manual_available === true);
-    check(
-      `manual fallback message present`,
-      typeof body?.message === "string" && /Till\/PayBill/i.test(body.message),
-      JSON.stringify(body?.message ?? null),
-    );
-    check(
-      `no price tampering: amount echoes package price (${body?.amount} vs ${pkg.price})`,
-      body?.amount === pkg.price,
-    );
+    if (darajaLive) {
+      // Configured: the portal must attempt a real STK push and must NEVER
+      // activate from the request itself. 201 means Safaricom accepted the push
+      // and the row is still PENDING — only the callback settles it. 502 means
+      // Safaricom refused, which the sandbox does to rapid repeat pushes.
+      check(`portal buy with Daraja configured does not activate inline`,
+        res.status === 201 || res.status === 502, `status=${res.status}`);
+      check(`an accepted push returns a payment id, and never a completion`,
+        res.status !== 201 || (Boolean(body?.payment_id) && body?.settled === undefined),
+        `status=${res.status}`);
+    } else {
+      check(`portal buy returns 422 (got ${res.status})`, res.status === 422);
+      check(
+        `body carries an "error" the portal renders (BuyForm reads j.error)`,
+        typeof body?.error === "string" && body.error.length > 0,
+        JSON.stringify(body?.error ?? null),
+      );
+      check(`daraja_configured === false (got ${body?.daraja_configured})`, body?.daraja_configured === false);
+      check(`manual_available === true (got ${body?.manual_available})`, body?.manual_available === true);
+      check(
+        `manual fallback message present`,
+        typeof body?.message === "string" && /Till\/PayBill/i.test(body.message),
+        JSON.stringify(body?.message ?? null),
+      );
+      check(
+        `no price tampering: amount echoes package price (${body?.amount} vs ${pkg.price})`,
+        body?.amount === pkg.price,
+      );
+    }
 
     const paymentsAfter = await countRows(`payments?isp_id=eq.${isp.id}`);
-    check(
-      `no payment row created (before=${paymentsBefore} after=${paymentsAfter})`,
-      paymentsBefore === paymentsAfter,
-    );
+    if (darajaLive) {
+      // A real push legitimately writes a PENDING row. What must never happen
+      // is it arriving already settled from the request itself.
+      const row = await rest(`payments?isp_id=eq.${isp.id}&select=status&order=created_at&limit=1`);
+      const newest = (row.json ?? [])[0];
+      check(`a configured push writes a PENDING row, never a settled one`,
+        newest?.status === "pending" || newest?.status === "failed",
+        `newest status=${newest?.status ?? "(none)"} (before=${paymentsBefore} after=${paymentsAfter})`);
+    } else {
+      check(
+        `no payment row created (before=${paymentsBefore} after=${paymentsAfter})`,
+        paymentsBefore === paymentsAfter,
+      );
+    }
 
     // The route opens the walk-up account BEFORE the Daraja guard by design,
     // so a 'pending' customer is an expected side effect — record it, then
@@ -291,8 +327,18 @@ async function run() {
       `info walk-up customer created by design: ${created.length} row(s)`
       + `${created.length ? ` status=${created[0].status} id=${created[0].id}` : ""}`,
     );
-    for (const c of created) await rest(`customers?id=eq.${c.id}`, { method: "DELETE" });
-    if (created.length) console.log(`info cleaned up ${created.length} test customer row(s)`);
+    for (const c of created) {
+      // payments.customer_id is ON DELETE RESTRICT. Once a real STK attempt has
+      // written a payment for this walk-up customer, deleting the customer alone
+      // silently fails and the test leaves residue behind. Both rows are artifacts
+      // of this run, so both are removed — child rows first.
+      await rest(`payments?customer_id=eq.${c.id}`, { method: "DELETE" });
+      const del = await rest(`customers?id=eq.${c.id}`, { method: "DELETE" });
+      if (del.res && !del.res.ok) {
+        console.log(`info cleanup warning for ${c.id}: ${String(del.text ?? "").slice(0, 120)}`);
+      }
+    }
+    if (created.length) console.log(`info cleaned up ${created.length} test customer row(s) and their payments`);
   }
 
   // ---- 3. /api/payments HTTP pagination --------------------------------
