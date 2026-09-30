@@ -60,6 +60,9 @@ test("status query posts to the documented endpoint with the shortcode and passk
   const body = JSON.parse(cap.init.body);
   assert.equal(body.TransactionID, "ws_CO_1");
   assert.equal(body.ShortCode, "174379");
+  // Daraja rejects the query with 400.002.02 "Invalid IdentifierType" when this
+  // is missing — it names which of the fields above is the identifier.
+  assert.equal(body.IdentifierType, "TransactionID");
   assert.equal(body.InitiatorSecurityCredential, "test-passkey");
   assert.equal(body.SecurityCredential, "test-passkey");
   assert.match(cap.init.headers.authorization, /^Bearer tok$/);
@@ -115,6 +118,22 @@ test("an HTTP failure surfaces Safaricom's own reason, not a generic one", async
   await assert.rejects(
     () => queryStkTransactionStatus(CREDS, { transactionId: "ws_CO_6" }),
     /Transaction status query not supported/,
+  );
+});
+
+test("this endpoint reports errors as errorMessage, not ResponseDescription", async (t) => {
+  // Observed live: Daraja answers a malformed status query with
+  // { errorCode: "400.002.02", errorMessage: "Bad Request - Invalid
+  // IdentifierType" }. Surfacing only ResponseDescription turned that into an
+  // opaque "HTTP 400", which is exactly the kind of dead end an operator cannot
+  // act on.
+  stubFetch(t, {
+    status: 400,
+    json: { requestId: "ac7b", errorCode: "400.002.02", errorMessage: "Bad Request - Invalid IdentifierType" },
+  });
+  await assert.rejects(
+    () => queryStkTransactionStatus(CREDS, { transactionId: "ws_CO_8" }),
+    /Bad Request - Invalid IdentifierType/,
   );
 });
 

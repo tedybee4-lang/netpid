@@ -138,13 +138,21 @@ export async function queryStkTransactionStatus(
       InitiatorSecurityCredential: c.passkey,
       SecurityCredential: c.passkey,
       TransactionID: opts.transactionId,
+      // REQUIRED by Daraja: without it the query is rejected with
+      // 400.002.02 "Invalid IdentifierType". The value names which field above
+      // identifies the transaction.
+      IdentifierType: "TransactionID",
       ShortCode: c.shortcode,
     }),
     signal: AbortSignal.timeout(20_000),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    throw new Error(String(body.ResponseDescription ?? `Daraja transaction status HTTP ${res.status}`));
+    // This endpoint answers errors with errorMessage/errorCode, NOT
+    // ResponseDescription like the STK push does.
+    throw new Error(String(
+      body.errorMessage ?? body.ResponseDescription ?? `Daraja transaction status HTTP ${res.status}`,
+    ));
   }
   return readStatus(body);
 }
