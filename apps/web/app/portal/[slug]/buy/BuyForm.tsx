@@ -6,10 +6,13 @@ import { useEffect, useRef, useState } from "react";
 // an account: the server prices the package and only the verified Daraja
 // callback (or an operator confirming a receipt) grants service.
 export default function BuyForm({
-  slug, packageId, price, instructions, support,
+  slug, packageId, price, instructions, payMethod, payNumber, support,
 }: {
   slug: string; packageId: string; price: number;
-  instructions: string | null; support: string;
+  instructions: string | null;
+  /** The M-Pesa target the ISP declared, or null when they have not set one. */
+  payMethod: "till" | "paybill" | null; payNumber: string;
+  support: string;
 }) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -20,6 +23,7 @@ export default function BuyForm({
   const [msg, setMsg] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const shillings = `KSh ${(price / 100).toLocaleString("en-KE")}`;
 
@@ -124,11 +128,48 @@ export default function BuyForm({
           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
             How to pay {shillings}
           </p>
-          <p className="mt-1 whitespace-pre-line text-sm text-slate-700">
-            {instructions?.trim()
-              ? instructions
-              : `Pay ${shillings} to the operator's M-Pesa Till/PayBill, then enter the M-Pesa receipt code below.`}
-          </p>
+
+          {payMethod && payNumber ? (
+            <>
+              {/* The number is the whole point of this screen, so it gets the
+                  large type and a copy button — a customer standing at a till
+                  with no signal should not have to read it character by
+                  character, or transcribe it wrongly. */}
+              <p className="mt-1 text-sm text-slate-700">
+                Pay <b>{shillings}</b> to the M-Pesa{" "}
+                <b>{payMethod === "paybill" ? "PayBill" : "Till"}</b>:
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="select-all rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-2xl font-black tracking-widest">
+                  {payNumber}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(payNumber).then(
+                      () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
+                      () => { /* clipboard blocked; the number is selectable anyway */ },
+                    );
+                  }}
+                  className="btn-ghost btn-sm"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              {instructions?.trim() && (
+                <p className="mt-2 whitespace-pre-line text-sm text-slate-700">
+                  {instructions}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="mt-1 whitespace-pre-line text-sm text-slate-700">
+              {instructions?.trim()
+                ? instructions
+                : `Pay ${shillings} to the operator's M-Pesa Till/PayBill, then enter the M-Pesa receipt code below.`}
+            </p>
+          )}
+
           <label className="label mt-3" htmlFor="buy-receipt">M-Pesa receipt code</label>
           <input id="buy-receipt" className="input" value={receipt}
             onChange={(e) => setReceipt(e.target.value.toUpperCase())}

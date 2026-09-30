@@ -5,10 +5,16 @@ import { useEffect, useState } from "react";
 // ISP admin: Daraja credentials + Till/PayBill. Secrets are write-only: the
 // API only ever returns configured flags, never values.
 export default function MpesaSettingsPage() {
-  const [status, setStatus] = useState<{ daraja_configured: boolean } | null>(null);
+  const [status, setStatus] = useState<{
+    daraja_configured: boolean;
+    providers?: { provider: string; payment_method: string | null; till_number: string | null; paybill: string | null }[];
+  } | null>(null);
   const [form, setForm] = useState({
     consumer_key: "", consumer_secret: "", passkey: "", shortcode: "",
     environment: "sandbox" as "sandbox" | "production",
+    // "" = not declared yet. The API infers from whichever number is present,
+    // so an ISP who only ever typed a till number never sees an error.
+    payment_method: "" as "" | "till" | "paybill",
     till_number: "", paybill: "",
   });
   const [msg, setMsg] = useState<string | null>(null);
@@ -17,7 +23,20 @@ export default function MpesaSettingsPage() {
 
   async function load() {
     const r = await fetch("/api/payments/daraja-config");
-    if (r.ok) setStatus(await r.json());
+    if (!r.ok) return;
+    const j = await r.json();
+    setStatus(j);
+    // Prefill the declared method and its number so the form shows what is
+    // actually live rather than blank boxes the operator has to guess about.
+    const p = (j.providers ?? []).find((x: { provider: string }) => x.provider === "daraja");
+    if (p) {
+      setForm((f) => ({
+        ...f,
+        payment_method: (p.payment_method as "till" | "paybill" | null) ?? "",
+        till_number: p.till_number ?? f.till_number,
+        paybill: p.paybill ?? f.paybill,
+      }));
+    }
   }
   useEffect(() => { load(); }, []);
 
@@ -90,7 +109,7 @@ export default function MpesaSettingsPage() {
               placeholder="174379" />
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label className="label" htmlFor="d-env">Environment</label>
             <select id="d-env" className="input" value={form.environment}
@@ -100,16 +119,38 @@ export default function MpesaSettingsPage() {
             </select>
           </div>
           <div>
-            <label className="label" htmlFor="d-till">Till number</label>
-            <input id="d-till" className="input" value={form.till_number}
-              onChange={(e) => set("till_number", e.target.value)} placeholder="Buy Goods till" />
-          </div>
-          <div>
-            <label className="label" htmlFor="d-pb">PayBill</label>
-            <input id="d-pb" className="input" value={form.paybill}
-              onChange={(e) => set("paybill", e.target.value)} placeholder="PayBill number" />
+            <label className="label" htmlFor="d-method">How customers pay</label>
+            <select id="d-method" className="input" value={form.payment_method}
+              onChange={(e) => set("payment_method", e.target.value)}>
+              <option value="">Not set yet</option>
+              <option value="till">M-Pesa Till (Buy Goods)</option>
+              <option value="paybill">M-Pesa PayBill</option>
+            </select>
           </div>
         </div>
+
+        {/* One number, chosen by the method above. Showing both boxes at once is
+            how an operator ends up with two live numbers and a portal that cannot
+            say which one is real. */}
+        {form.payment_method === "till" && (
+          <div>
+            <label className="label" htmlFor="d-till">Till number customers pay to</label>
+            <input id="d-till" className="input" inputMode="numeric" value={form.till_number}
+              onChange={(e) => set("till_number", e.target.value)} placeholder="e.g. 123456" />
+          </div>
+        )}
+        {form.payment_method === "paybill" && (
+          <div>
+            <label className="label" htmlFor="d-pb">PayBill number customers pay to</label>
+            <input id="d-pb" className="input" inputMode="numeric" value={form.paybill}
+              onChange={(e) => set("paybill", e.target.value)} placeholder="e.g. 174379" />
+          </div>
+        )}
+        <p className="hint">
+          This is the number your captive portal will print to customers paying
+          manually, and the number the till reference is checked against. Leave it
+          on &quot;Not set yet&quot; if you only use STK Push.
+        </p>
         <p className="hint">
           Get these from the Safaricom Daraja portal. They are encrypted with
           APP_ENCRYPTION_KEY before storage and are never displayed back.

@@ -24,7 +24,7 @@ export default async function PortalBuyPage({
   if (!isp) notFound();
 
   const { data: settings } = await supabase.from("isp_settings")
-    .select("brand_color,portal_title,payment_instructions")
+    .select("brand_color,portal_title,payment_instructions,pay_method,pay_number")
     .eq("isp_id", isp.id).maybeSingle();
 
   // Same public read scope the portal itself uses: enabled hotspot/voucher only
@@ -39,9 +39,15 @@ export default async function PortalBuyPage({
 
   const cfg = (settings ?? {}) as {
     brand_color?: string; payment_instructions?: string | null;
+    pay_method?: "till" | "paybill" | null; pay_number?: string | null;
   };
   const brand = cfg.brand_color ?? "#4F46E5";
   const support = isp.support_phone ?? isp.phone ?? "—";
+  // Only show a number the operator actually declared. A half-configured pair
+  // (method set, number blank) must fall back to the generic wording rather than
+  // printing an empty till.
+  const payNumber = (cfg.pay_number ?? "").trim();
+  const payMethod = payNumber ? (cfg.pay_method ?? "till") : null;
 
   return (
     <main className="mx-auto max-w-md px-4 py-10">
@@ -66,6 +72,8 @@ export default async function PortalBuyPage({
           packageId={pkg.id}
           price={pkg.price}
           instructions={cfg.payment_instructions ?? null}
+          payMethod={payMethod}
+          payNumber={payNumber}
           support={support}
         />
       </div>

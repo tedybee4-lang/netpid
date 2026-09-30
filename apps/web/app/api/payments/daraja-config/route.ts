@@ -15,7 +15,37 @@ const schema = z.object({
   environment: z.enum(["sandbox", "production"]).default("sandbox"),
   till_number: z.string().max(20).optional().or(z.literal("")),
   paybill: z.string().max(20).optional().or(z.literal("")),
+  // Which of the two is LIVE. Optional so an older client that never sends it
+  // still works; the server then infers from whichever number is present.
+  payment_method: z.enum(["till", "paybill"]).optional(),
 });
+
+/**
+ * Collapse the (till_number, paybill, payment_method) triple into one coherent
+ * answer: exactly one number, matching the declared method, and the other
+ * column cleared. Storing both and calling it a day is how a portal ends up
+ * telling a customer to pay a number the operator retired last month.
+ */
+function resolvePayTarget(d: {
+  payment_method?: "till" | "paybill";
+  till_number?: string; paybill?: string;
+}): { method: "till" | "paybill" | null; till: string | null; paybill: string | null; error?: string } {
+  const tillRaw = (d.till_number ?? "").trim();
+  const pbRaw = (d.paybill ?? "").trim();
+  // An explicit choice wins. Otherwise infer, preferring Till when both are set
+  // so we never silently discard a number the operator typed.
+  const method = d.payment_method ?? (tillRaw ? "till" : pbRaw ? "paybill" : null);
+  if (!method) return { method: null, till: null, paybill: null };
+  const till = method === "till" ? tillRaw : "";
+  const paybill = method === "paybill" ? pbRaw : "";
+  if (!till && !paybill) {
+    return {
+      method, till: null, paybill: null,
+      error: `Choose Till or PayBill, then enter the ${method === "till" ? "Till" : "PayBill"} number customers will pay to.`,
+    };
+  }
+  return { method, till: till || null, paybill: paybill || null };
+}
 
 async function requireAdmin(req: Request) {
   const r = await resolveIsp(req);
@@ -32,12 +62,16 @@ export async function GET(req: Request) {
   if ("error" in a) return a.error;
   const svc = createServiceClient();
   const { data: providers } = await svc.from("payment_providers")
-    .select("id, provider, account_name, paybill, till_number, callback_url, status")
+    .select("id, provider, account_name, paybill, till_number, callback_url, status, payment_method")
     .eq("isp_id", a.ok.ispId);
   // Configured flags only — never secrets.
   const rows = (providers ?? []).map((p) => {
-    const row = p as { provider: string; status: string; paybill: string | null; till_number: string | null; callback_url: string | null };
-    return { provider: row.provider, status: row.status, paybill: row.paybill, till_number: row.till_number, callback_url: row.callback_url };
+    const row = p as { provider: string; status: string; paybill: string | null; till_number: string | null; callback_url: string | null; payment_method: string | null };
+    return {
+      provider: row.provider, status: row.status,
+      paybill: row.paybill, till_number: row.till_number, callback_url: row.callback_url,
+      payment_method: row.payment_method ?? (row.till_number ? "till" : row.paybill ? "paybill" : null),
+    };
   });
   return NextResponse.json({
     providers: rows,
@@ -54,6 +88,12 @@ export async function POST(req: Request) {
   }
   const d = parsed.data;
   const svc = createServiceClient();
+
+  // One live pay-in target, not two. Resolve before anything is written so a
+  // half-valid pair never reaches the table.
+  const target = resolvePayTarget(d);
+  if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+
   const allowed = await checkRateLimit(svc, svc, `daraja-save:${a.ok.ispId}`, 10, 3600);
   if (!allowed) return NextResponse.json({ error: "Rate limited." }, { status: 429 });
 
@@ -86,7 +126,7 @@ export async function POST(req: Request) {
 
   const { data: provider, error } = await svc.from("payment_providers").upsert({
     isp_id: a.ok.ispId, provider: "daraja",
-    till_number: d.till_number || null, paybill: d.paybill || null,
+    payment_method: target.method, till_number: target.till, paybill: target.paybill,
     status: verified ? "active" : "disabled",
   }, { onConflict: "isp_id,provider" }).select("id").single();
   if (error || !provider) {
@@ -96,6 +136,25 @@ export async function POST(req: Request) {
     provider_id: (provider as { id: string }).id,
     encrypted_secret: encrypted, key_version: 1,
   }, { onConflict: "provider_id" });
+
+  // Mirror the live pay target onto isp_settings. The captive portal is
+  // anonymous and reads that table, so this is how the customer ever sees which
+  // number to pay. Written here rather than in a trigger because this is the only
+  // place an ISP declares the target, and both tables are written in one request
+  // so they cannot disagree at the moment the operator saves.
+  //
+  // Cleared to null when the ISP sets the method back to "Not set yet" — a stale
+  // number on a public page is worse than no number.
+  if (a.ok.ispId) {
+    const { data: existing } = await svc.from("isp_settings")
+      .select("isp_id").eq("isp_id", a.ok.ispId).maybeSingle();
+    if (existing) {
+      await svc.from("isp_settings").update({
+        pay_method: target.method,
+        pay_number: target.method === "till" ? target.till : target.paybill,
+      }).eq("isp_id", a.ok.ispId);
+    }
+  }
 
   // ISP-scoped audit trail (audit_logs, not the Super Admin platform log).
   // Metadata records the outcome only — never any part of the secret.
