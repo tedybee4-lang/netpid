@@ -51,6 +51,9 @@ export type ServerRow = {
   uptime_seconds: number | null; load_avg_1: string | null;
   last_heartbeat_at: string | null; last_health_check_at: string | null;
   last_health_error: string | null; notes: string | null;
+  role: string; active: boolean; replaces_server_id: string | null;
+  migration_status: string | null; migration_notes: string | null;
+  decommissioned_at: string | null;
   created_at: string; updated_at: string;
 };
 

@@ -104,6 +104,32 @@ async function run() {
     };
     handler = all[job.kind] ?? null;
   }
+  if (!handler && (job.kind.startsWith("wireguard-"))) {
+    // WireGuard needs the privileged helper, but nothing else in the worker does.
+    const wg = await import("./wireguard-jobs.js");
+    const wgJobs = {
+      "wireguard-tunnel-sync": wg.wireguardTunnelSync,
+      "wireguard-sweep": wg.wireguardSweep,
+    };
+    handler = wgJobs[job.kind] ?? null;
+  }
+  if (!handler && (job.kind === "router-capabilities" || job.kind === "router-test"
+      || job.kind === "router-backup" || job.kind === "router-disconnect"
+      || job.kind === "router-provision" || job.kind === "router-apply-rate"
+      || job.kind === "router-health")) {
+    const cap = await import("./capabilities.js");
+    const mik = await import("./mikrotik-jobs.js");
+    const capJobs = {
+      "router-capabilities": cap.routerCapabilities,
+      "router-test": mik.routerHealth,
+      "router-backup": mik.routerBackup,
+      "router-disconnect": mik.routerDisconnect,
+      "router-provision": mik.routerProvision,
+      "router-apply-rate": mik.routerApplyRate,
+      "router-health": mik.routerHealth,
+    };
+    handler = capJobs[job.kind] ?? null;
+  }
   if (!handler && ["expire-sweep", "expiry-reminders", "session-kick", "usage-rollup", "schedule-tick"].includes(job.kind)) {
     // Phase 5: lifecycle, CoA, usage rollup, scheduler fan-out
     const lc = await import("./lifecycle.js");
@@ -138,6 +164,38 @@ async function run() {
 
 console.log("netpid network worker starting…");
 setInterval(run, 3000);
+
+/**
+ * Enqueue the WireGuard health sweep on a fixed cadence.
+ *
+ * The sweep is a job rather than a bare setInterval so that it takes the same
+ * FOR UPDATE SKIP LOCKED claim as every other job: if a second worker is ever
+ * started against the same queue, two workers cannot both run the sweep and
+ * fight over the same router_tunnels rows.
+ *
+ * The enqueue is itself idempotent (a fixed key), so restarting the worker
+ * cannot pile up duplicate sweeps.
+ */
+const WG_SWEEP_MS = Number(process.env.WIREGUARD_SWEEP_INTERVAL_MS ?? 300_000);
+const WG_SWEEP_KEY = "wireguard-sweep:scheduled";
+if (Number.isFinite(WG_SWEEP_MS) && WG_SWEEP_MS > 0) {
+  const scheduleWireguardSweep = async () => {
+    try {
+      await sb.rpc("enqueue_job_once", {
+        p_kind: "wireguard-sweep",
+        p_isp_id: null,
+        p_router_id: null,
+        p_key: WG_SWEEP_KEY,
+        p_payload: { scheduled: true },
+      });
+    } catch (e) {
+      // Never crash the worker loop over a failed housekeeping enqueue.
+      console.error(`wireguard sweep enqueue failed: ${e?.message ?? e}`);
+    }
+  };
+  setInterval(scheduleWireguardSweep, WG_SWEEP_MS);
+  console.log(`wireguard sweep every ${Math.round(WG_SWEEP_MS / 1000)}s`);
+}
 
 // Heartbeat runs on its own 45s cadence, independent of the job loop, so a
 // busy queue cannot starve the health report — and a quiet queue still reports.

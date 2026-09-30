@@ -255,3 +255,123 @@ export function buildCustomerQueue(customer) {
       `queue=default/default comment=${rosQuote("NETPID")}`,
   ].join("\n");
 }
+
+const WG_TAG = "NETPID-managed";
+
+/** A WireGuard key is 32 bytes base64: 43 characters then a single '='. */
+export function isWireguardKey(v) {
+  return typeof v === "string" && /^[A-Za-z0-9+/]{43}=$/.test(v);
+}
+
+/**
+ * WireGuard setup for a MikroTik in the NETPID management tunnel (RouterOS 7+).
+ *
+ * This is the mjs twin of buildWireguardScript in apps/web/lib/routeros.ts. The
+ * two are kept honest by network-worker/test/wireguard-script.test.js, which
+ * pins the properties that must never differ — above all that the script is
+ * NON-DESTRUCTIVE.
+ */
+export function buildWireguardScript(o = {}) {
+  const c = (s) => `# ${s}`;
+  const name = rosName(o.routerName ?? "router", "netpid-router");
+  const ifName = "netpid-wg";
+  const port = o.listenPort ?? 51820;
+  const L = [];
+
+  L.push(c("=".repeat(62)));
+  L.push(c(`NETPID WireGuard management tunnel — ${name}`));
+  L.push(c(""));
+  L.push(c("SAFE TO RE-RUN. Only removes objects carrying the"));
+  L.push(c(`"${WG_TAG}" comment. Does NOT flush the firewall and does NOT`));
+  L.push(c("modify existing PPPoE, HotSpot, NAT, bridge, VLAN or routing config."));
+  L.push(c("Requires RouterOS 7.x."));
+  L.push(c("=".repeat(62)));
+  L.push("");
+
+  if (!isWireguardKey(o.serverPublicKey)) {
+    L.push(c("ERROR: serverPublicKey is not a valid WireGuard key (32 bytes, base64)."));
+    return L.join("\n");
+  }
+  if (!isWireguardKey(o.routerPublicKey)) {
+    L.push(c("1. Interface — the router's private key stays on the router"));
+    L.push(c("   Run this on the router, then paste its public key into NETPID:"));
+    L.push("");
+    L.push(`  /interface/wireguard/add name=${rosQuote(ifName)} listen-port=${port}`);
+    L.push("  /interface/wireguard/print");
+    return L.join("\n");
+  }
+
+  L.push(c("1. Interface"));
+  L.push(c("   The router's private key stays on the router — NETPID only ever"));
+  L.push(c("   receives its PUBLIC key."));
+  L.push(`:do { /interface/wireguard remove [find name=${rosQuote(ifName)}] } on-error={}`);
+  L.push(`/interface/wireguard add name=${rosQuote(ifName)}`);
+  L.push(`  listen-port=${port}`);
+  L.push("");
+  L.push(c("   !! Read /interface/wireguard/print and paste lPrivate-key above !!"));
+
+  L.push("");
+  L.push(c("2. Address — the router's end of the point-to-point /30"));
+  L.push(`:do { /ip/address remove [find interface=${rosQuote(ifName)}] } on-error={}`);
+  L.push(`/ip/address add address=${o.routerTunnelIp}/30 interface=${rosQuote(ifName)} comment=${rosQuote(WG_TAG)}`);
+
+  L.push("");
+  L.push(c("3. Peer — the VPS end of the tunnel"));
+  L.push(`:do { /interface/wireguard/peers remove [find interface=${rosQuote(ifName)}] } on-error={}`);
+  L.push(`/interface/wireguard/peers add interface=${rosQuote(ifName)}`);
+  L.push(`  public-key=${o.serverPublicKey}`);
+  if (o.vpsEndpoint) {
+    L.push("  allowed-address=0.0.0.0/0");
+    L.push(`  endpoint-address=${o.vpsEndpoint}:${port}`);
+  } else {
+    L.push(`  allowed-address=${o.vpsTunnelIp}/32`);
+  }
+  L.push(`  persistent-keepalive=25s comment=${rosQuote(WG_TAG)}`);
+
+  L.push("");
+  L.push(c("4. Firewall — ADD one rule. Nothing is flushed."));
+  L.push(`:do { /ip/firewall/filter remove [find comment=${rosQuote(`${WG_TAG}-wg-in`)}] } on-error={}`);
+  L.push(`/ip/firewall/filter add chain=input action=accept protocol=udp dst-port=${port} ` +
+    `in-interface-list=WAN comment=${rosQuote(`${WG_TAG}-wg-in`)} ` +
+    `place-before=[find chain=input action=drop]`);
+
+  if (o.includeRadius !== false) {
+    const hotspotProfile = o.hotspotProfile ?? "default";
+    L.push("");
+    L.push(c("5. RADIUS over the tunnel — this is what removes the need for any"));
+    L.push(c("   publicly exposed management port."));
+    if (!o.radiusSecret) {
+      L.push(c("   No RADIUS secret is stored for this router's NAS yet. Add one on"));
+      L.push(c("   the NAS record, then download this script again."));
+    } else {
+      const secret = rosQuote(o.radiusSecret);
+      L.push(c(""));
+      L.push(c("   Router as RADIUS CLIENT: auth + accounting to the VPS, over the"));
+      L.push(c("   tunnel. The secret is the one already held for this NAS."));
+      L.push(`:do { /ip/radius remove [find comment=${rosQuote(WG_TAG)}] } on-error={}`);
+      L.push(
+        `/ip/radius add service=ppp,hotspot address=${o.vpsTunnelIp} ` +
+          `secret=${secret} comment=${rosQuote(WG_TAG)}`,
+      );
+      L.push("");
+      L.push(c("   PPPoE: credentials are verified by the VPS, not on the router,"));
+      L.push(c("   so revoking a customer in NETPID takes effect on next login."));
+      L.push("/ppp/aaa set use-radius=yes accounting=yes interim-update=5m");
+      L.push("");
+      L.push(c("   HotSpot: captive-portal logins authorize the same way."));
+      L.push(
+        `:do { /ip/hotspot/profile set [find name=${rosQuote(hotspotProfile)}] ` +
+          `use-radius=yes radius-interim-update=5m } on-error={}`,
+      );
+      L.push("");
+      L.push(c("   Inbound: lets NETPID disconnect a user from the dashboard."));
+      L.push(`:do { /radius/incoming remove [find comment~${rosQuote(WG_TAG)}] } on-error={}`);
+      L.push(
+        `/radius/incoming add address=${o.vpsTunnelIp}/32 port=3799 accept=yes ` +
+          `secret=${secret} comment=${rosQuote(WG_TAG)}`,
+      );
+    }
+  }
+  return L.join("\n");
+}
+

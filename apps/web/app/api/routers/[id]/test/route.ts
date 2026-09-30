@@ -9,10 +9,28 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const r = await resolveIsp(req);
   if ("error" in r) return r.error;
-  const { data: router } = await r.supabase.from("routers").select("id").eq("id", id).eq("isp_id", r.ispId).maybeSingle();
+  const { data: router } = await r.supabase.from("routers").select(
+    "id,name,host,status,site,model,ros_version,arch,ram_mb,provisioning_profile," +
+    "has_wireguard,has_radius,has_pppoe,has_hotspot,has_vlan,has_api_ssl," +
+    "compatibility_notes,capabilities_checked_at,uptime_seconds,cpu_load,mem_used_pct"
+  ).eq("id", id).eq("isp_id", r.ispId).maybeSingle();
   if (!router) return NextResponse.json({ error: "Router not found" }, { status: 404 });
-  const { data } = await r.supabase.from("router_health").select("*").eq("router_id", id).order("checked_at", { ascending: false }).limit(10);
-  return NextResponse.json({ health: data ?? [] });
+  const [{ data: health }, { data: tunnel }] = await Promise.all([
+    r.supabase.from("router_health").select("*").eq("router_id", id).order("checked_at", { ascending: false }).limit(10),
+    r.supabase.from("router_tunnels")
+      .select("status,router_tunnel_ip,vps_tunnel_ip,last_handshake_at,last_endpoint,router_public_key")
+      .eq("router_id", id).maybeSingle(),
+  ]);
+  const t = tunnel as {
+    status: string; router_tunnel_ip: string; vps_tunnel_ip: string;
+    last_handshake_at: string | null; last_endpoint: string | null;
+    router_public_key: string | null;
+  } | null;
+  return NextResponse.json({
+    router,
+    health: health ?? [],
+    tunnel: t ? { ...t, needs_router_key: !t.router_public_key } : null,
+  });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -26,6 +44,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!ok) return NextResponse.json({ error: "Rate limited." }, { status: 429 });
   const body = await req.json().catch(() => ({}));
   const kind = body.action === "backup" ? "router-backup"
+    : body.action === "capabilities" ? "router-capabilities"
     : body.action === "disconnect" && body.username ? "router-disconnect" : "router-test";
   if (kind === "router-disconnect" && typeof body.username !== "string") {
     return NextResponse.json({ error: "username required" }, { status: 400 });

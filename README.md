@@ -68,7 +68,7 @@ on demand, so all runtime reads happen against live env vars, never at build tim
    committed — `vercel.json` has no such field and the repo deliberately has no root
    `package.json`. Without it Vercel finds nothing to install. With it, Framework / Build Command /
    Output Directory auto-detect as `Next.js` / `next build` / `.next`; leave them alone.
-3. **Environment Variables** — the same five names as `apps/web/.env.example`:
+3. **Environment Variables** — the same names as `apps/web/.env.example`:
 
    | Key | Value from | Scope |
    | --- | --- | --- |
@@ -76,16 +76,30 @@ on demand, so all runtime reads happen against live env vars, never at build tim
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | same page → `anon` `public` key | all environments (bundled into the browser; public by design, guarded by RLS) |
    | `SUPABASE_SERVICE_ROLE_KEY` | same page → `service_role` key | Production + Preview, **server only** |
    | `APP_ENCRYPTION_KEY` | `openssl rand -base64 32` (must decode to exactly 32 bytes — `lib/secrets.ts` enforces this) | Production + Preview, **server only**; must be byte-identical to `network-worker`, or router passwords already stored in the DB cannot be decrypted |
-   | `PAYHERO_WEBHOOK_SECRET` | PayHero dashboard | Production + Preview, **server only** |
+   | `PAYHERO_WEBHOOK_SECRET` | PayHero dashboard | Production + Preview, **server only**. **Legacy** — only `POST /api/payments/webhook` and pre-existing `provider = 'payhero'` rows read it. New ISPs use Daraja and can leave it unset |
+   | `DARAJA_CALLBACK_URL` | `https://<your-domain>/api/payments/daraja-callback` | Production, **server only**, optional — falls back to the request origin on every STK push, so it is only needed when the app is reached through an internal hostname that Safaricom cannot resolve |
 
-   Never prefix the last three with `NEXT_PUBLIC_` — they are read in `lib/supabase/server.ts`,
-   `lib/secrets.ts` and `lib/payment-security.ts`, and `NEXT_PUBLIC_` would bake them into the
-   public browser bundle. Pasting `.env.example` placeholders verbatim is what produced the
-   original "Invalid API key" failure; Vercel has no `.env.local`, so the real values must be
-   entered here.
+   Never prefix any of the server-only keys with `NEXT_PUBLIC_` — they are read in
+   `lib/supabase/server.ts`, `lib/secrets.ts` and `lib/payment-security.ts`, and `NEXT_PUBLIC_`
+   would bake them into the public browser bundle. Pasting `.env.example` placeholders verbatim is
+   what produced the original "Invalid API key" failure; Vercel has no `.env.local`, so the real
+   values must be entered here.
 4. After the first deploy: Supabase → Authentication → URL Configuration → set the Site URL to the
-   Vercel domain (otherwise reset/magic-link emails point at localhost), and point the PayHero
-   callback at `https://<your-domain>/api/payments/webhook`.
+   Vercel domain (otherwise reset/magic-link emails point at localhost), and point the Daraja
+   callback at `https://<your-domain>/api/payments/daraja-callback`.
+
+#### M-Pesa (direct Safaricom Daraja)
+
+Daraja credentials are **per ISP, not environment variables**. Each ISP pastes its own consumer
+key / consumer secret / passkey / shortcode at `/dashboard/settings/mpesa`, which stores them as an
+AES-256-GCM envelope in `payment_provider_credentials` (RLS enabled, no policies → readable only by
+the service role). Nothing else is needed on Vercel beyond optional `DARAJA_CALLBACK_URL`.
+
+- STK push: `POST /api/payments/stk` creates a `pending` payment and never activates service.
+- Callback: `POST /api/payments/daraja-callback` activates **only** on `ResultCode === 0` with a
+  matching `CheckoutRequestID` and an amount equal to the stored row.
+- Manual fallback: `POST /api/payments/manual` records a Till/PayBill receipt the operator already
+  saw on their handset; unique on `mpesa_receipt`, so a receipt can never be banked twice.
 
 Only `apps/web` belongs on Vercel: `network-worker` needs a long-running host (VPS with systemd,
 Fly, Render) and `freeradius/` runs on your own server — see Quick start step 5.

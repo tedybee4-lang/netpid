@@ -9,6 +9,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 export type AuditAction =
   | "vps_created" | "vps_updated" | "vps_deleted" | "vps_credentials_changed"
   | "vps_connection_tested" | "vps_enabled" | "vps_disabled"
+  | "vps_migration_started" | "vps_switched" | "vps_decommissioned"
   | "worker_action" | "wireguard_action" | "radius_action" | "firewall_action"
   | "admin_login" | "admin_logout";
 

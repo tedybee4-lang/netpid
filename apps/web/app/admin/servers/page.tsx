@@ -20,7 +20,8 @@ type Server = {
   disk_percent: number | null; uptime_seconds: number | null;
   last_heartbeat_at: string | null; last_health_check_at: string | null;
   last_health_error: string | null; isp_id: string | null; notes: string | null;
-  created_at: string;
+  role: string; active: boolean; migration_status: string | null;
+  migration_notes: string | null; created_at: string;
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -109,6 +110,18 @@ export default function ServersPage() {
     });
     if (!j) return;
     setSecret(""); setExpires(""); setMsg("Credential encrypted and stored. It will never be shown again.");
+    load();
+  }
+
+  async function migrate(id: string, action: "switch" | "decommission" | "standby") {
+    setMsg(null); setErr(null);
+    const r = await fetch(`/api/admin/vps/${id}/migrate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { setErr(j.error ?? "Migration failed"); return; }
+    setMsg(j.message ?? "Done");
     load();
   }
 
@@ -238,6 +251,9 @@ export default function ServersPage() {
                   <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase ${STATUS_STYLE[s.status] ?? STATUS_STYLE.unknown}`}>
                     {s.status}
                   </span>
+                  <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs font-semibold uppercase text-slate-400">
+                    {s.role}{s.active ? " · active" : ""}
+                  </span>
                   <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase ${CRED_STYLE[s.credential_status] ?? CRED_STYLE.missing}`}>
                     credential {s.credential_status}
                   </span>
@@ -257,6 +273,18 @@ export default function ServersPage() {
                 <button onClick={() => toggle(s)} disabled={busy}
                   className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/5 disabled:opacity-40">
                   {s.enabled ? "Disable" : "Enable"}
+                </button>
+                {s.role !== "primary" && s.enabled && (
+                  <button onClick={() => migrate(s.id, "switch")} disabled={busy}
+                    className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/25 disabled:opacity-40">
+                    Switch active to this VPS
+                  </button>
+                )}
+                <button onClick={() => {
+                  if (confirm(`Decommission ${s.name}? It stays in history as retired.`)) migrate(s.id, "decommission");
+                }} disabled={busy}
+                  className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-white/5 disabled:opacity-40">
+                  Decommission
                 </button>
               </div>
             </div>

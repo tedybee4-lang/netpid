@@ -6,13 +6,13 @@ export default async function SettingsPage() {
   const supabase = await createClient();
   const { data: memberships } = await supabase.from("isp_users").select("isp_id");
   const ispId = memberships?.[0]?.isp_id as string | undefined;
-  const [{ data: provider }, { data: smsProvider }, { data: settings }, { data: isp }] = ispId ? await Promise.all([
-    supabase.from("payment_providers").select("provider,account_name,paybill,till_number,status").eq("isp_id", ispId).maybeSingle(),
+  const [{ data: providers }, { data: smsProvider }, { data: settings }, { data: isp }] = ispId ? await Promise.all([
+    supabase.from("payment_providers").select("provider,account_name,paybill,till_number,callback_url,status").eq("isp_id", ispId),
     supabase.from("sms_providers").select("sender_id,status").eq("isp_id", ispId).maybeSingle(),
     supabase.from("sms_settings").select("daily_limit,monthly_limit,enabled").eq("isp_id", ispId).maybeSingle(),
     supabase.from("isps").select("name, slug, phone, email, location, support_phone, support_whatsapp")
       .eq("id", ispId).maybeSingle(),
-  ]) : [{ data: null }, { data: null }, { data: null }, { data: null }];
+  ]) : [{ data: [] }, { data: null }, { data: null }, { data: null }];
 
   return (
     <main className="mx-auto max-w-4xl space-y-4 px-4 py-6 sm:px-6 lg:px-8">
@@ -46,14 +46,20 @@ export default async function SettingsPage() {
         </div>
       </div>
 
-      <div className="card"><p className="font-semibold">PayHero (M-Pesa)</p>
-        {!provider ? <p className="mt-2 text-sm text-slate-500">Not connected. Add credentials server-side (encrypted), then set paybill/till here via support.</p> : (
+      <div className="card"><p className="font-semibold">M-Pesa (Direct Safaricom Daraja)</p>
+        {!(providers ?? []).length ? <p className="mt-2 text-sm text-slate-500">Not connected.</p> : (
           <dl className="mt-2 space-y-1 text-sm">
-            <div className="flex justify-between"><dt className="text-slate-500">Paybill</dt><dd>{provider.paybill ?? "—"}</dd></div>
-            <div className="flex justify-between"><dt className="text-slate-500">Till</dt><dd>{provider.till_number ?? "—"}</dd></div>
-            <div className="flex justify-between"><dt className="text-slate-500">Status</dt><dd>{provider.status}</dd></div>
+            {(providers as { provider: string; paybill: string | null; till_number: string | null; status: string }[]).map((provider) => (
+              <div key={provider.provider} className="flex justify-between gap-2">
+                <dt className="text-slate-500">{provider.provider}</dt>
+                <dd>{provider.paybill ?? provider.till_number ?? "—"} · {provider.status}</dd>
+              </div>
+            ))}
           </dl>)}
-        <p className="mt-2 text-xs text-slate-500">Webhook: /api/payments/webhook · signature verified, idempotent.</p>
+        <a className="mt-3 inline-flex text-sm text-indigo-600 hover:underline" href="/dashboard/settings/mpesa">
+          Manage M-Pesa / Daraja →
+        </a>
+        <p className="mt-2 text-xs text-slate-500">STK callback: /api/payments/daraja-callback · verified by CheckoutRequestID, idempotent.</p>
       </div>
     </main>
   );
