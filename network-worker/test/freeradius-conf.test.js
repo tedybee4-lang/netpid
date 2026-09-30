@@ -62,3 +62,54 @@ test("client_query is valid PostgreSQL", () => {
   assert.ok(conf.includes("WHERE enabled ORDER BY id"));
   assert.doesNotMatch(conf, /enabled = 1/);
 });
+
+// FreeRADIUS xlat alternation is `%{%{Attr}:-default}`. The default must be a
+// literal or another attribute — `%l` is neither, and radiusd rejects the whole
+// module at parse time with "Unknown attribute", so the server never starts.
+//
+// This shipped broken: the unit had a bad default on 16 lines and every test
+// still passed, because nothing here ever invoked a real radiusd parse. This
+// test is the stand-in for that.
+test("xlat alternation defaults are literal or attributes, never %l", () => {
+  assert.doesNotMatch(conf, /:%-?%l\}/, "%l is not a valid xlat default");
+  // Scan the config only. The header comment documents the very syntax being
+  // checked — `%{%{Attr}:-default}` — and a comment is not parsed by radiusd,
+  // so the literal word "default" there must not be treated as a bad default.
+  const code = conf.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+  // Every `:-` default must resolve to digits or a nested %{} expansion.
+  for (const m of code.matchAll(/%\{%\{[^}]+\}:-([^}]*)\}/g)) {
+    const dflt = m[1];
+    assert.ok(
+      /^-?\d+$/.test(dflt) || /^%\{/.test(dflt),
+      `alternation default "${dflt}" is neither numeric nor an attribute`,
+    );
+  }
+});
+
+// The deploy step substitutes these two passwords on its way to
+// /etc/freeradius/3.0/mods-available/sql. They MUST still be present here, and
+// no OTHER placeholder may be left behind — an unsubstituted password silently
+// makes FreeRADIUS fail to authenticate while looking configured.
+test("exactly the two documented placeholders are present", () => {
+  assert.match(conf, /CHANGE_ME_RADIUS_AUTH/);
+  assert.match(conf, /CHANGE_ME_RADIUS_ACCT/);
+  const others = [...conf.matchAll(/CHANGE_ME_\w+/g)].map((m) => m[0]);
+  assert.deepEqual(
+    [...new Set(others)].sort(),
+    ["CHANGE_ME_RADIUS_ACCT", "CHANGE_ME_RADIUS_AUTH"],
+    "an undocumented placeholder would be deployed verbatim",
+  );
+});
+
+// radiusd validates every %{...} in a module query string at parse time, so ONE
+// attribute that the installed dictionaries do not define makes the whole
+// module unloadable and the server refuses to start — the failure looks like a
+// syntax error pointing at unrelated nearby text.
+//
+// Acct-Interval (RFC 2866 attr 85) is optional and is genuinely absent from
+// the freeradius3 package dictionaries, so the deployment adds it to the LOCAL
+// dictionary. This test records that dependency so the omission is a visible,
+// deliberate decision rather than a surprise on the next install.
+test("the accounting module needs Acct-Interval, which packages omit", () => {
+  assert.match(conf, /%\{%\{Acct-Interval\}:-0\}/, "module no longer uses Acct-Interval");
+});

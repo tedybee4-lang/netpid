@@ -45,6 +45,67 @@ sudo cp freeradius/sql-tenant-aware.conf /etc/freeradius/3.0/mods-available/sql
 sudo vi /etc/freeradius/3.0/mods-available/sql   # set both CHANGE_ME_* passwords
 sudo ln -sf ../mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
 ```
+
+### 4a. REQUIRED: define `Acct-Interval` in the local dictionary
+
+**radiusd will not start** without this. On Ubuntu 24.04 (`freeradius3` 3.2.5)
+`Acct-Interval` — RFC 2866 attribute 85, an *optional* accounting attribute — is
+not defined in any dictionary the package ships. Because rlm_sql validates every
+`%{...}` in a `query = "..."` string **at parse time**, that single missing
+definition makes the whole `sql` module unloadable:
+
+```
+mods-enabled/sql[167]: Failed parsing expanded string: ^ Unknown attribute
+```
+
+The error is genuinely misleading: the fragment radiusd prints shows several
+adjacent attributes, and it is easy to blame whichever one sits nearest the
+caret — it was `Event-Timestamp`, which resolves perfectly well. To find the real
+culprit, extract the character under the caret instead of trusting the
+surrounding text:
+
+```bash
+freeradius -XC 2>&1 | grep -A2 "Failed parsing expanded string"
+```
+
+Add the attribute to the **local** dictionary, which is the documented place for
+exactly this and is not touched by a package upgrade:
+
+```bash
+cat >> /etc/freeradius/3.0/dictionary <<'EOF'
+ATTRIBUTE	Acct-Interval		85	integer
+EOF
+chown freerad:freerad /etc/freeradius/3.0/dictionary
+freeradius -XC    # must print the full debug banner and exit 0
+```
+
+> The owning group is `freerad`, **not** `freeradius`. Getting this wrong leaves
+> the module unreadable and `freeradius.service` failing to start.
+
+### 4b. Accounting must call `sql_acct`
+
+The stock `accounting { }` block ships with `sql` **commented out**, so it runs
+with no SQL module at all until you insert the accounting instance yourself — a
+global substitution will silently match nothing:
+
+```bash
+# insert "\tsql_acct" just before the closing brace of the accounting block.
+# Do NOT sed globally: the authorize/post-auth blocks must keep the `sql`
+# instance, which logs in as radius_auth.
+freeradius -XC && sudo systemctl restart freeradius
+```
+
+### 4c. Two other traps that look like syntax errors
+
+* **`%l` is not an xlat default.** Alternation is `%{%{Attr}:-default}`; the
+  default must be numeric or another attribute. `-%l` makes radiusd reject the
+  module with "Unknown attribute".
+* **The Ubuntu binary is `freeradius`, not `radiusd`.** A `set -e` deploy script
+  that validates with `radiusd -XC` dies with "command not found" and leaves the
+  service stopped, which is easy to misread as a config problem.
+* A backup file left inside `sites-enabled/` is *read* by radiusd. An unreadable
+  one stops the service from starting at all — keep backups outside that
+  directory.
 Two rlm_sql instances are defined:
 - `sql` (login `radius_auth`) — authorize check/reply, group membership/check/reply
   (all tenant-scoped), post-auth audit log (passwords never stored), and

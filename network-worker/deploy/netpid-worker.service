@@ -4,6 +4,13 @@ Documentation=https://github.com/tedybee4-lang/netpid
 After=network-online.target
 Wants=network-online.target
 
+# The worker is a poller, not a service that must answer instantly: give up
+# after a minute of bad code rather than crash-looping forever and filling the
+# journal. These two keys belong to [Unit], NOT [Service] — systemd silently
+# ignores them in [Service] ("Unknown key name ... ignoring").
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
 [Service]
 Type=simple
 User=netpid
@@ -13,12 +20,6 @@ EnvironmentFile=/etc/netpid/worker.env
 ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=5
-
-# The worker is a poller, not a service that must answer instantly: give up
-# after a minute of bad code rather than crash-looping forever and filling the
-# journal.
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 StandardOutput=journal
 StandardError=journal
