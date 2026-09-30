@@ -92,18 +92,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     metadata: { outcome, result_code: status.resultCode, ...detail },
   });
 
-  if (status.resultCode === null) {
-    // Daraja accepted the query but reported no outcome. That is not evidence of
-    // payment, so the row stays pending and nothing is activated.
-    await audit("no_result_reported", { response_code: status.responseCode });
-    return NextResponse.json({
-      ok: true, settled: false,
-      result_code: null,
-      message: "Safaricom accepted the query but reported no result for this request. "
-        + "Leave it pending and check again shortly.",
-    });
-  }
-
   if (statusFailed(status)) {
     // Guarded on 'pending' for the same reason the callback is: a late
     // successful callback must never be overwritten by a stale query.
@@ -118,7 +106,23 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       already: failed?.length ? null : "processed",
       message: status.resultDesc
         ? `Safaricom reports this payment did not complete: ${status.resultDesc}`
+        + " The customer can retry or pay manually."
         : "Safaricom reports this payment did not complete. The customer can retry or pay manually.",
+    });
+  }
+
+  if (!statusSucceeded(status)) {
+    // THE SETTLEMENT GATE. Daraja accepted the QUERY but reported no usable
+    // outcome — a missing or non-numeric ResultCode. A 200 and a ResponseCode
+    // of "0" describe the query, not the payment, so neither may be read as
+    // money received. The row stays pending for a later retry and no service is
+    // issued. Only a numeric ResultCode of 0 gets past this line.
+    await audit("no_result_reported", { response_code: status.responseCode });
+    return NextResponse.json({
+      ok: true, settled: false,
+      result_code: status.resultCode,
+      message: "Safaricom accepted the query but reported no result for this request. "
+        + "Leave it pending and check again shortly.",
     });
   }
 

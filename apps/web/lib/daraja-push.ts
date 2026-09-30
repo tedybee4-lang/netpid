@@ -105,11 +105,16 @@ export type DarajaStatusResult = {
 
 function readStatus(body: Record<string, unknown>): DarajaStatusResult {
   const raw = body.ResultCode;
-  const num = raw === undefined || raw === null || raw === "" ? null : Number(raw);
+  // ResultCode must be a real JSON number, exactly as the callback parser
+  // requires. Coercing here would let a string "0" settle a payment that the
+  // callback path would refuse, so the two paths disagreed about the one value
+  // that issues service. An unrecognised code fails closed: it leaves the
+  // payment pending for an operator rather than activating on a guess.
+  const resultCode = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
   return {
     responseCode: String(body.ResponseCode ?? ""),
     responseDescription: String(body.ResponseDescription ?? ""),
-    resultCode: Number.isFinite(num) ? num : null,
+    resultCode,
     resultDesc: body.ResultDesc ? String(body.ResultDesc) : null,
     checkoutRequestId: body.CheckoutRequestID ? String(body.CheckoutRequestID) : null,
     merchantRequestId: body.MerchantRequestID ? String(body.MerchantRequestID) : null,

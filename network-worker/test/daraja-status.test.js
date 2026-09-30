@@ -108,6 +108,17 @@ test("an accepted query reporting NO ResultCode settles nothing", async (t) => {
   assert.equal(statusFailed(s), false);
 });
 
+test("only a real numeric 0 counts as settlement, never the string \"0\"", async (t) => {
+  // The callback parser already rejects a string ResultCode, and the reconcile
+  // path must agree with it: the two routes that issue service cannot hold
+  // different standards for the one value that matters.
+  stubFetch(t, { json: { ResponseCode: "0", ResultCode: "0" } });
+  const s = await queryStkTransactionStatus(CREDS, { transactionId: "ws_CO_5b" });
+  assert.equal(s.resultCode, null, "a string must not be coerced into a number");
+  assert.equal(statusSucceeded(s), false);
+  assert.equal(statusFailed(s), false, "and must not be mistaken for a failure either");
+});
+
 test("a rejected query throws and is NOT reported as a failed payment", async (t) => {
   stubFetch(t, { status: 400, json: { ResponseCode: "1", ResponseDescription: "Invalid CheckoutRequestID" } });
   await assert.rejects(
@@ -156,8 +167,10 @@ test("the reconcile route keeps the provider, status and tenant guards", async (
   assert.match(src, /p\.status !== "pending"/, "must only act on a pending payment");
   assert.match(src, /getDarajaCreds\(r\.ispId\)/, "must use the ISP's own credentials");
   assert.match(src, /checkRateLimit\(/, "must be rate limited");
-  // Settlement must require an explicit ResultCode, never a 200 on its own.
-  assert.match(src, /status\.resultCode === null/, "a missing ResultCode must not settle");
+  // Settlement must require an explicit ResultCode of 0, never a 200. The gate
+  // is stated positively in the route so the rule is readable at the point of
+  // activation rather than implied by a fall-through.
+  assert.match(src, /if \(!statusSucceeded\(status\)\)/, "the settlement gate must be explicit");
   // The activation flip stays a compare-and-set, so a late callback is a duplicate.
   assert.match(src, /\.eq\("id", p\.id\)\.eq\("status", "pending"\)\.select\("id"\)/);
   assert.match(src, /applyConfirmedPayment/, "activation must reuse the shared helper");
