@@ -65,8 +65,8 @@ export default function ReportsPage() {
               KSh {((revenueData?.total_minor ?? 0) / 100).toLocaleString("en-KE", { maximumFractionDigits: 2 })}
             </p>
           </div>
-          <div className="border rounded overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="card-flush overflow-x-auto">
+            <table className="table min-w-[420px]">
               <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
                 <tr><th className="p-3">Date</th><th className="p-3">Count</th><th className="p-3 text-right">Revenue</th></tr>
               </thead>
@@ -87,8 +87,8 @@ export default function ReportsPage() {
           </div>
         </div>
       ) : tab === "usage" ? (
-        <div className="border rounded overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="card-flush overflow-x-auto">
+          <table className="table min-w-[720px]">
             <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="p-3">Date</th>

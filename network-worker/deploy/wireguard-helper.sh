@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# NETPID WireGuard helper â€” the ONLY privileged path the worker has.
+# NETPID WireGuard helper — the ONLY privileged path the worker has.
 #
-# ONE INTERFACE PER ROUTER â€” WHY NOT A SHARED wg0
+# ONE INTERFACE PER ROUTER — WHY NOT A SHARED wg0
 #   Each router_tunnels row owns its own key pair AND its own /30. A single
 #   shared interface has exactly one private key and one address, so it cannot
 #   simultaneously be 10.90.0.1/30, 10.90.1.1/30 and 10.90.2.1/30. Sharing one

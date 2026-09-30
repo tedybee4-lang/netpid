@@ -15,6 +15,7 @@ export const NAV: { group: string; items: Item[] }[] = [
       { href: "/dashboard", label: "Dashboard", icon: "grid" },
       { href: "/dashboard/favorites", label: "Favorites", icon: "star" },
       { href: "/dashboard/notifications", label: "Notifications", icon: "bell" },
+      { href: "/dashboard/announcements", label: "Announcements", icon: "message" },
     ],
   },
   {
@@ -34,6 +35,7 @@ export const NAV: { group: string; items: Item[] }[] = [
     group: "Network",
     items: [
       { href: "/dashboard/network", label: "Network", icon: "router" },
+      { href: "/dashboard/network/ip-pools", label: "IP pools", icon: "map" },
       { href: "/dashboard/topology", label: "Topology", icon: "map" },
       { href: "/dashboard/tr069", label: "TR-069 ACS", icon: "device" },
       { href: "/dashboard/access-points", label: "Access points", icon: "wifi" },
@@ -48,7 +50,8 @@ export const NAV: { group: string; items: Item[] }[] = [
     items: [
       { href: "/dashboard/bulk-actions", label: "Bulk actions", icon: "list" },
       { href: "/dashboard/page-builder", label: "Static pages", icon: "page" },
-      { href: "/dashboard/inventory", label: "Inventory & expenses", icon: "box" },
+      { href: "/dashboard/inventory", label: "Inventory", icon: "box" },
+      { href: "/dashboard/expenses", label: "Expenses", icon: "receipt" },
       { href: "/dashboard/resellers", label: "Resellers", icon: "share" },
       { href: "/dashboard/sms", label: "SMS", icon: "message" },
       { href: "/dashboard/support", label: "Support tickets", icon: "mail" },

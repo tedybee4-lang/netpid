@@ -42,7 +42,7 @@ export async function POST(req: Request) {
     if (isExpired) {
       severity = "medium";
       diagnosis = `Customer package has expired on ${new Date(customer.expiry_date).toLocaleDateString()}. Account status is set to '${customer.status}'. RADIUS authentication will reject new PPPoE attempts with Access-Reject.`;
-      action = "Instruct customer to complete M-Pesa renewal via PayHero STK or Voucher redemption. Account will immediately restore upon webhook arrival.";
+      action = "Instruct customer to renew via M-Pesa: STK push from their customer page once Daraja is connected, or record the Till/PayBill receipt as a manual payment. Service restores as soon as the payment is confirmed.";
     } else if (!openSession) {
       severity = "high";
       diagnosis = `Customer is active and billed, but has NO active RADIUS session. Possible ONT power loss, fiber cut, or misconfigured PPPoE credentials in CPE router.`;

@@ -120,8 +120,8 @@ export default function InventoryPage() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading hardware records...</p>
       ) : (
-        <div className="border rounded overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="card-flush overflow-x-auto">
+          <table className="table min-w-[720px]">
             <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="p-3">Type</th>

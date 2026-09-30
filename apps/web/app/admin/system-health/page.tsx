@@ -5,7 +5,7 @@ import { deriveStatus } from "@/lib/vps";
 
 export const dynamic = "force-dynamic";
 
-const INFRA = ["supabase", "database", "radius", "radius_db", "worker", "payhero", "sms"] as const;
+const INFRA = ["supabase", "database", "radius", "radius_db", "worker", "sms"] as const;
 
 function ago(iso: string | null) {
   if (!iso) return "never";

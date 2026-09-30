@@ -3,10 +3,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-// Super Admin â†’ VPS / Servers.
+// Super Admin → VPS / Servers.
 //
 // The credential is write-only. There is no code path in this page that can
-// display a stored secret, and the API never returns one â€” the UI only ever
+// display a stored secret, and the API never returns one — the UI only ever
 // shows a status word (ACTIVE / EXPIRING / EXPIRED / MISSING).
 
 type Server = {
@@ -51,7 +51,7 @@ function ago(iso: string | null) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 function uptime(sec: number | null) {
-  if (sec == null) return "â€”";
+  if (sec == null) return "—";
   const d = Math.floor(sec / 86400);
   if (d > 0) return `${d}d ${Math.floor((sec % 86400) / 3600)}h`;
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
@@ -98,7 +98,7 @@ export default function ServersPage() {
     });
     if (!j) return;
     setShowAdd(false);
-    setMsg(`${j.server.name} registered. Add its credential next â€” it stays disabled until you do.`);
+    setMsg(`${j.server.name} registered. Add its credential next — it stays disabled until you do.`);
     load();
   }
 
@@ -132,7 +132,7 @@ export default function ServersPage() {
     if (!j) return;
     const r = j.result;
     setMsg(r.ok
-      ? `SSH OK Â· ${r.os ?? "unknown OS"} Â· worker ${r.worker} Â· radius ${r.radius} Â· wireguard ${r.wireguard} Â· firewall ${r.firewall} Â· CPU ${r.cpuPercent ?? "?"}% Â· RAM ${r.memPercent ?? "?"}% Â· disk ${r.diskPercent ?? "?"}% (${r.durationMs}ms)`
+      ? `SSH OK · ${r.os ?? "unknown OS"} · worker ${r.worker} · radius ${r.radius} · wireguard ${r.wireguard} · firewall ${r.firewall} · CPU ${r.cpuPercent ?? "?"}% · RAM ${r.memPercent ?? "?"}% · disk ${r.diskPercent ?? "?"}% (${r.durationMs}ms)`
       : `Test failed: ${r.error}`);
     load();
   }
@@ -154,7 +154,7 @@ export default function ServersPage() {
           <h1 className="text-2xl font-black tracking-tight sm:text-3xl">VPS / Servers</h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
             Platform infrastructure. Credentials are encrypted at rest and are never returned by
-            any endpoint â€” only a status word.
+            any endpoint — only a status word.
           </p>
         </div>
         <button onClick={() => setShowAdd((v) => !v)} className="rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700">
@@ -235,10 +235,10 @@ export default function ServersPage() {
       )}
 
       <div className="mt-6 space-y-4">
-        {loading && <p className="text-sm text-slate-500">Loading serversâ€¦</p>}
+        {loading && <p className="text-sm text-slate-500">Loading servers…</p>}
         {!loading && !servers.length && (
           <p className="rounded-2xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-500">
-            No servers registered yet. Use â€œAdd Serverâ€ to register one.
+            No servers registered yet. Use ›Add Server” to register one.
           </p>
         )}
 
@@ -259,16 +259,16 @@ export default function ServersPage() {
                   </span>
                 </div>
                 <p className="mt-1 font-mono text-xs text-slate-400">
-                  {s.ip_address}:{s.ssh_port} Â· {s.ssh_username}@{s.ip_address}
-                  {s.provider && <> Â· {s.provider}</>}
-                  {s.region && <> Â· {s.region}</>}
+                  {s.ip_address}:{s.ssh_port} · {s.ssh_username}@{s.ip_address}
+                  {s.provider && <> · {s.provider}</>}
+                  {s.region && <> · {s.region}</>}
                 </p>
-                {s.os_name && <p className="mt-0.5 text-xs text-slate-500">{s.os_name} Â· kernel {s.kernel ?? "â€”"}</p>}
+                {s.os_name && <p className="mt-0.5 text-xs text-slate-500">{s.os_name} · kernel {s.kernel ?? "—"}</p>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => test(s.id)} disabled={testing === s.id || s.credential_status === "missing"}
                   className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/5 disabled:opacity-40">
-                  {testing === s.id ? "Testingâ€¦" : "Test connection"}
+                  {testing === s.id ? "Testing…" : "Test connection"}
                 </button>
                 <button onClick={() => toggle(s)} disabled={busy}
                   className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/5 disabled:opacity-40">
@@ -324,14 +324,14 @@ export default function ServersPage() {
                 {s.credential_updated_at && (
                   <span className="ml-2 text-xs font-normal text-slate-500">
                     updated {ago(s.credential_updated_at)}
-                    {s.credential_expires_at && ` Â· expires ${new Date(s.credential_expires_at).toLocaleDateString("en-KE")}`}
+                    {s.credential_expires_at && ` · expires ${new Date(s.credential_expires_at).toLocaleDateString("en-KE")}`}
                   </span>
                 )}
               </summary>
               <p className="mt-2 text-xs text-slate-500">
                 {s.credential_status === "missing"
                   ? "No credential stored. The server cannot be reached over SSH until one is added."
-                  : "A credential is stored. Its value is not retrievable through the API or this page â€” rotate it by pasting a replacement below."}
+                  : "A credential is stored. Its value is not retrievable through the API or this page — rotate it by pasting a replacement below."}
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
                 <div>

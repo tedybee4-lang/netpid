@@ -16,7 +16,7 @@ function ago(iso: string | null): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-const INFRA = ["supabase", "database", "radius", "radius_db", "worker", "payhero", "sms"] as const;
+const INFRA = ["supabase", "database", "radius", "radius_db", "worker", "sms"] as const;
 
 const HEALTH_TONE = (h?: { status: string }) =>
   !h ? "border-white/10 bg-white/5 text-slate-500"

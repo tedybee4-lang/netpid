@@ -26,7 +26,7 @@ function CustomerTable({ shown, picked, onToggle }: {
   shown: Customer[]; picked: Set<string>; onToggle: (id: string) => void;
 }) {
   return (
-    <div className="max-h-[520px] overflow-y-auto">
+    <div className="max-h-[520px] overflow-auto">
       <table className="table" style={{ minWidth: 560 }}>
         <thead className="sticky top-0 bg-white">
           <tr><th /><th>Customer</th><th>Phone</th><th>Status</th><th>Expires</th></tr>

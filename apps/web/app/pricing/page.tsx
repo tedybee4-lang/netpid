@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { RATES, TIERS, TRIAL_DAYS, routerFee } from "@/lib/pricing";
 import { kes } from "@/lib/format";
+import PricingCalculator from "@/components/PricingCalculator";
 
 const FAQ = [
   {
@@ -106,6 +107,10 @@ export default function PricingPage() {
       </section>
 
       <section className="mx-auto max-w-4xl px-4 pb-12">
+        <PricingCalculator />
+      </section>
+
+      <section className="mx-auto max-w-4xl px-4 pb-12">
         <div className="card">
           <h2 className="panel-title">How your bill is calculated</h2>
           <p className="mt-2 text-sm text-slate-600">
@@ -113,7 +118,8 @@ export default function PricingPage() {
             per-GB charges and no cut of your customer payments — your subscription
             is the only thing you pay NETPID.
           </p>
-          <table className="table mt-4">
+          <div className="mt-4 overflow-x-auto">
+            <table className="table min-w-[420px]">
             <tbody>
               <tr>
                 <td className="font-semibold">MikroTik router</td>
@@ -140,7 +146,8 @@ export default function PricingPage() {
                 <td className="text-right tnum">{kes(RATES.installFee)}</td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </div>
           <p className="hint mt-3">
             Worked example — 3 routers and 40 PPPoE subscribers costs{" "}
             {kes(routerFee(3) + 40 * RATES.perPppoeSub)} a month. The router fee is

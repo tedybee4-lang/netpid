@@ -4,22 +4,50 @@
 import { sendDisconnect } from "./radius-wire.js";
 import { bareUsername } from "./radius-logic.js";
 import { decryptSecret } from "./secrets.js";
+import { resolveSmsBody, dateOnly } from "./sms-templates.js";
 
 const COA_TIMEOUT_MS = Number(process.env.RADIUS_COA_TIMEOUT_MS) || 5000;
 
-async function queueSms(sb, ispId, customer, event, body) {
+// One lookup per worker run rather than one per message: an expiry sweep can
+// queue hundreds of SMS rows for the same ISP.
+const ispNameCache = new Map();
+async function ispName(sb, ispId) {
+  if (ispNameCache.has(ispId)) return ispNameCache.get(ispId);
+  const { data } = await sb.from("isps").select("name").eq("id", ispId).maybeSingle();
+  const name = data?.name ?? "";
+  ispNameCache.set(ispId, name);
+  return name;
+}
+
+// `fallbackBody` is the wording used when the ISP has no template for `event`.
+// A template that exists and is enabled always wins, so editing one changes what
+// subscribers receive without a deploy. Disabled template => nothing is sent.
+async function queueSms(sb, ispId, customer, event, fallbackBody) {
   const { data: settings } = await sb.from("sms_settings").select("enabled").eq("isp_id", ispId).maybeSingle();
   if (settings?.enabled === false) return;
   const d = String(customer.phone ?? "").replace(/\D/g, "");
   const to = /^254\d{9}$/.test(d) ? d : /^0\d{9}$/.test(d) ? "254" + d.slice(1) : d;
-  await sb.from("sms_logs").insert({ isp_id: ispId, to_phone: to, body, event, status: "queued" });
+
+  const resolved = await resolveSmsBody(sb, {
+    ispId, event, fallback: fallbackBody,
+    vars: {
+      name: customer.full_name ?? "",
+      customer_no: customer.customer_no ?? "",
+      phone: to,
+      expiry: dateOnly(customer.expiry_date),
+      isp: await ispName(sb, ispId),
+    },
+  });
+  if (resolved.disabled) return;
+
+  await sb.from("sms_logs").insert({ isp_id: ispId, to_phone: to, body: resolved.body, event, status: "queued" });
   await sb.rpc("enqueue_job", { p_kind: "sms-send", p_isp_id: ispId, p_payload: { event } });
 }
 
 // expire-sweep: active + past expiry → expired + RADIUS revoke + kick + SMS.
 export async function expireSweep(sb, job) {
   const ispId = job.isp_id ?? job.payload?.isp_id ?? null;
-  let q = sb.from("customers").select("id, isp_id, phone, full_name, username, expiry_date")
+  let q = sb.from("customers").select("id, isp_id, phone, full_name, username, expiry_date, customer_no")
     .eq("status", "active").lt("expiry_date", new Date().toISOString()).limit(500);
   if (ispId) q = q.eq("isp_id", ispId);
   const { data: expired } = await q;
@@ -44,7 +72,7 @@ export async function expireSweep(sb, job) {
 export async function expiryReminders(sb, job) {
   const ispId = job.isp_id ?? job.payload?.isp_id ?? null;
   const soon = new Date(Date.now() + 24 * 3600_000).toISOString();
-  let q = sb.from("customers").select("id, isp_id, phone, full_name, expiry_date")
+  let q = sb.from("customers").select("id, isp_id, phone, full_name, expiry_date, customer_no")
     .eq("status", "active").lt("expiry_date", soon)
     .gt("expiry_date", new Date().toISOString()).is("expiry_reminded_at", null).limit(500);
   if (ispId) q = q.eq("isp_id", ispId);

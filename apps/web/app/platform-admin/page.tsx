@@ -11,10 +11,19 @@ export default async function PlatformAdminPage() {
     .select("id, role").eq("user_id", user.id).eq("is_active", true).maybeSingle();
   if (!admin) redirect("/dashboard");
 
-  const [{ count: ispCount }, { count: subCount }] = await Promise.all([
+  const [{ count: ispCount }, { count: subCount }, { count: radiusCount }, { data: servers }] = await Promise.all([
     svc.from("isps").select("id", { count: "exact", head: true }),
     svc.from("netpid_subscriptions").select("id", { count: "exact", head: true }),
+    svc.from("radius_servers").select("id", { count: "exact", head: true }),
+    // Real infrastructure status, read from the same columns the /admin
+    // console uses. These tiles used to be the literal strings "Not connected."
+    // regardless of the database, which reported a healthy deployment as down.
+    svc.from("vps_servers").select("worker_status, radius_status"),
   ]);
+  const rows = servers ?? [];
+  const workersOnline = rows.filter((s) => s.worker_status === "online").length;
+  const radiusLive = rows.filter((s) => s.radius_status === "online").length;
+
   const { data: isps } = await svc.from("isps")
     .select("id,name,slug,status,subscription_status,trial_ends_at,created_at")
     .order("created_at", { ascending: false }).limit(20);
@@ -24,12 +33,20 @@ export default async function PlatformAdminPage() {
       <p className="badge bg-indigo-100 text-indigo-700">PLATFORM ADMIN · {admin.role}</p>
       <h1 className="mt-2 text-3xl font-black">NETPID Platform</h1>
       <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[["Total ISPs", String(ispCount ?? 0)], ["Subscriptions", String(subCount ?? 0)],
-          ["RADIUS infra", "Not connected."], ["Network worker", "Not connected."]].map(([k, v]) => (
+        {[
+          ["Total ISPs", String(ispCount ?? 0)],
+          ["Subscriptions", String(subCount ?? 0)],
+          ["RADIUS live", radiusLive ? `${radiusLive}/${rows.length}` : (radiusCount ? "None reachable" : "None configured")],
+          ["Workers online", rows.length ? `${workersOnline}/${rows.length}` : "No servers registered"],
+        ].map(([k, v]) => (
           <div key={k} className="card"><p className="text-xs font-bold uppercase text-slate-500">{k}</p>
           <p className="mt-1 text-lg font-extrabold">{v}</p></div>
         ))}
       </div>
+      <p className="mt-3 text-sm text-slate-500">
+        Full platform console (servers, workers, system health, audit) lives in the{" "}
+        <a href="/admin" className="font-semibold text-indigo-600 hover:underline">Super Admin console</a>.
+      </p>
       <div className="card mt-4 overflow-x-auto">
         <p className="font-semibold">Latest ISPs</p>
         {!isps?.length ? <p className="mt-2 text-sm text-slate-500">No data yet.</p> : (

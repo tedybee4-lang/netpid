@@ -2,8 +2,8 @@
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyPayheroSignature, logSecurity } from "@/lib/payment-security";
 
-// POST /api/payments/webhook â€” PayHero callback. ONLY verified webhooks activate service.
-// Idempotent: duplicate provider_tx_id â†’ recorded as duplicate, never double-activate.
+// POST /api/payments/webhook — PayHero callback. ONLY verified webhooks activate service.
+// Idempotent: duplicate provider_tx_id → recorded as duplicate, never double-activate.
 export async function POST(req: Request) {
   const raw = await req.text();
   const signature = req.headers.get("x-payhero-signature");
@@ -50,7 +50,7 @@ export async function POST(req: Request) {
     await logSecurity("webhook_amount_mismatch", { providerTx, expected: payment?.amount, received: amount });
     return NextResponse.json({ error: "Rejected" }, { status: 422 });
   }
-  // Activate: payment â†’ entitlement â†’ receipt â†’ invoice â†’ notify.
+  // Activate: payment → entitlement → receipt → invoice → notify.
   // RADIUS sync is queued for Phase 3 worker.
   const now = new Date().toISOString();
   await svc.from("payments").update({

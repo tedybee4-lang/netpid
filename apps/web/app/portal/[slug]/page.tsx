@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { kes } from "@/lib/isp";
 
 // Tenant-branded captive portal: /portal/[slug] (public, no login).
-// Login/voucher/pay handled via RADIUS + PayHero; NO direct RADIUS from browser.
+// Packages link to /portal/[slug]/buy, which posts to the public
+// /api/portal/[slug]/pay endpoint (STK push, or a manual receipt claim).
+// Everything server-side; NO direct RADIUS from the browser.
 export default async function PortalPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const supabase = await createClient();

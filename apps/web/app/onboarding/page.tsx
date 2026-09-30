@@ -81,7 +81,7 @@ export default function OnboardingPage() {
           </div>
         )}
       </div>
-      <p className="mt-3 text-xs text-slate-500">Phases 2–4 continue setup: packages, PayHero, SMS, RADIUS, first router.</p>
+      <p className="mt-3 text-xs text-slate-500">Next: packages, M-Pesa (Daraja or manual), SMS, RADIUS and your first router.</p>
     </main>
   );
 }

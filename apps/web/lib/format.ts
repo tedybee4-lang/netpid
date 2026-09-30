@@ -82,10 +82,13 @@ export function dateOnly(iso: string | null | undefined): string {
 
 const STATUS_TONE: Record<string, string> = {
   online: "badge-ok", synced: "badge-ok", active: "badge-ok", completed: "badge-ok",
+  paid: "badge-ok", matched: "badge-ok",
   offline: "badge-bad", failed: "badge-bad", error: "badge-bad", suspended: "badge-bad",
-  blocked: "badge-bad", terminated: "badge-bad",
+  blocked: "badge-bad", terminated: "badge-bad", overdue: "badge-bad", mismatch: "badge-bad",
   degraded: "badge-warn", pending: "badge-warn", retrying: "badge-warn", expiring: "badge-warn",
+  open: "badge-warn", refunded: "badge-warn",
   unknown: "badge-mute", disabled: "badge-mute", draft: "badge-mute",
+  void: "badge-mute", cancelled: "badge-mute",
 };
 
 export function statusTone(status: string | null | undefined): string {

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { ago, kes, mbps, speedPair, statusTone } from "@/lib/format";
 import ChargeCustomer from "../ChargeCustomer";
 import SpeedOverrideForm from "../SpeedOverrideForm";
+import CustomerStatusActions from "../CustomerStatusActions";
 
 export default async function CustomerDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -38,6 +39,17 @@ export default async function CustomerDetail({ params }: { params: Promise<{ id:
       <div className="card mt-6">
         <p className="font-bold">Charge / renew (M-Pesa STK)</p>
         <ChargeCustomer customerId={customer.id} packages={packages ?? []} />
+      </div>
+      <div className="card mt-4">
+        <p className="font-bold">Service status</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Only <span className="font-semibold text-slate-700">active</span> customers authorize.
+          Suspend cuts access on the next poll without touching their balance, expiry date or
+          payment history.
+        </p>
+        <div className="mt-3">
+          <CustomerStatusActions customerId={customer.id} status={customer.status} />
+        </div>
       </div>
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <div className="card"><p className="font-bold">Account</p>

@@ -1,6 +1,7 @@
 // NETPID network worker — persistent process (VPS), NOT serverless.
 // Polls public.network_jobs with FOR UPDATE SKIP LOCKED, exponential backoff.
 import { createClient } from "@supabase/supabase-js";
+import { resolveSmsBody, kes, dateOnly } from "./sms-templates.js";
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -28,11 +29,9 @@ async function sendTopspeed({ to, body }) {
   return { ok: true, response: await res.json().catch(() => ({})) };
 }
 
-const TEMPLATES = {
-  payment_received: () => "Payment received. Receipt available in your portal. Thank you!",
-  package_activated: () => "Your package is now active.",
-  welcome: () => "Welcome! Your account is registered.",
-};
+// Message wording lives in public.sms_templates (see ./sms-templates.js).
+// Nothing is hardcoded here anymore: an ISP editing a template now changes what
+// subscribers actually receive.
 
 async function claim() {
   const { data, error } = await sb.rpc("claim_next_job");
@@ -51,15 +50,41 @@ const HANDLERS = {
     return { ok: true, stk: "sent" };
   },
   "post-payment": async (job) => {
-    const { customer_id, event } = job.payload ?? {};
+    const { customer_id, event, payment_id } = job.payload ?? {};
     if (!job.isp_id || !customer_id) throw new Error("post-payment missing isp/customer");
-    const { data: customer } = await sb.from("customers").select("phone").eq("id", customer_id).single();
+    const evt = event || "payment_received";
+    const { data: customer } = await sb.from("customers")
+      .select("phone, full_name, customer_no, expiry_date").eq("id", customer_id).single();
     const { data: settings } = await sb.from("sms_settings").select("enabled").eq("isp_id", job.isp_id).maybeSingle();
     if (!customer || settings?.enabled === false) return { ok: true, sms: "skipped" };
-    const render = TEMPLATES[event] ?? TEMPLATES.payment_received;
+
+    // Only variables that can genuinely be resolved for this message — the
+    // editor's preview uses the same catalogue, so what is typed is what sends.
+    const vars = {
+      name: customer.full_name ?? "",
+      customer_no: customer.customer_no ?? "",
+      phone: normalizeKe(customer.phone),
+      expiry: dateOnly(customer.expiry_date),
+      isp: "",
+      amount: "",
+      receipt: "",
+    };
+    const { data: isp } = await sb.from("isps").select("name").eq("id", job.isp_id).maybeSingle();
+    vars.isp = isp?.name ?? "";
+    if (payment_id) {
+      const { data: pay } = await sb.from("payments")
+        .select("amount, mpesa_receipt").eq("id", payment_id).maybeSingle();
+      if (pay) { vars.amount = kes(pay.amount); vars.receipt = pay.mpesa_receipt ?? ""; }
+    }
+
+    const resolved = await resolveSmsBody(sb, { ispId: job.isp_id, event: evt, vars });
+    // Template switched off means "do not send this message" — not "use the
+    // built-in wording instead".
+    if (resolved.disabled) return { ok: true, sms: "template-disabled" };
+
     await sb.from("sms_logs").insert({ isp_id: job.isp_id,
-      to_phone: normalizeKe(customer.phone), body: render(), event, status: "queued" });
-    await sb.rpc("enqueue_job", { p_kind: "sms-send", p_isp_id: job.isp_id, p_payload: { event } });
+      to_phone: normalizeKe(customer.phone), body: resolved.body, event: evt, status: "queued" });
+    await sb.rpc("enqueue_job", { p_kind: "sms-send", p_isp_id: job.isp_id, p_payload: { event: evt } });
     return { ok: true, sms: "queued" };
   },
   "sms-send": async (job) => {
@@ -93,14 +118,25 @@ async function run() {
     const pg = await import("pg").catch(() => null);
     const radiusPool = process.env.RADIUS_DB_URL && pg
       ? new pg.default.Pool({ connectionString: process.env.RADIUS_DB_URL }) : null;
+    // EVERY handler exported by radius.js / mikrotik-jobs.js takes (sb, job).
+    // run() calls handler(job), so each entry is wrapped to close over the
+    // module-scope `sb`. Mapping the bare function reference here would pass the
+    // JOB as `sb` and leave `job` undefined, which fails as
+    // "Cannot read properties of undefined (reading 'payload')" — which is
+    // exactly how router-backup failed before this was fixed.
     const all = {
-      "radius-nas-sync": mods[0].radiusNasSync, "radius-user-sync": mods[0].radiusUserSync,
-      "radius-group-sync": mods[0].radiusGroupSync, "radius-health": mods[0].radiusHealth,
-      "radius-test-auth": mods[0].radiusTestAuth,
-      "router-health": mods[1].routerHealth, "router-test": mods[1].routerHealth,
-      "router-disconnect": mods[1].routerDisconnect, "router-backup": mods[1].routerBackup,
-      "router-provision": mods[1].routerProvision, "router-apply-rate": mods[1].routerApplyRate,
-      "accounting-sync": (sb2, job2) => mods[1].accountingSync(sb2, job2, radiusPool),
+      "radius-nas-sync": (j) => mods[0].radiusNasSync(sb, j),
+      "radius-user-sync": (j) => mods[0].radiusUserSync(sb, j),
+      "radius-group-sync": (j) => mods[0].radiusGroupSync(sb, j),
+      "radius-health": (j) => mods[0].radiusHealth(sb, j),
+      "radius-test-auth": (j) => mods[0].radiusTestAuth(sb, j),
+      "router-health": (j) => mods[1].routerHealth(sb, j),
+      "router-test": (j) => mods[1].routerHealth(sb, j),
+      "router-disconnect": (j) => mods[1].routerDisconnect(sb, j),
+      "router-backup": (j) => mods[1].routerBackup(sb, j),
+      "router-provision": (j) => mods[1].routerProvision(sb, j),
+      "router-apply-rate": (j) => mods[1].routerApplyRate(sb, j),
+      "accounting-sync": (j) => mods[1].accountingSync(sb, j, radiusPool),
     };
     handler = all[job.kind] ?? null;
   }
@@ -108,8 +144,10 @@ async function run() {
     // WireGuard needs the privileged helper, but nothing else in the worker does.
     const wg = await import("./wireguard-jobs.js");
     const wgJobs = {
-      "wireguard-tunnel-sync": wg.wireguardTunnelSync,
-      "wireguard-sweep": wg.wireguardSweep,
+      // Same (sb, job) contract as the other dynamic modules: wireguardSweep
+      // takes sb only, so it ignores the job argument entirely.
+      "wireguard-tunnel-sync": (j) => wg.wireguardTunnelSync(sb, j),
+      "wireguard-sweep": () => wg.wireguardSweep(sb),
     };
     handler = wgJobs[job.kind] ?? null;
   }
@@ -120,13 +158,13 @@ async function run() {
     const cap = await import("./capabilities.js");
     const mik = await import("./mikrotik-jobs.js");
     const capJobs = {
-      "router-capabilities": cap.routerCapabilities,
-      "router-test": mik.routerHealth,
-      "router-backup": mik.routerBackup,
-      "router-disconnect": mik.routerDisconnect,
-      "router-provision": mik.routerProvision,
-      "router-apply-rate": mik.routerApplyRate,
-      "router-health": mik.routerHealth,
+      "router-capabilities": (j) => cap.routerCapabilities(sb, j),
+      "router-test": (j) => mik.routerHealth(sb, j),
+      "router-backup": (j) => mik.routerBackup(sb, j),
+      "router-disconnect": (j) => mik.routerDisconnect(sb, j),
+      "router-provision": (j) => mik.routerProvision(sb, j),
+      "router-apply-rate": (j) => mik.routerApplyRate(sb, j),
+      "router-health": (j) => mik.routerHealth(sb, j),
     };
     handler = capJobs[job.kind] ?? null;
   }

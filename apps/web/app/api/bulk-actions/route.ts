@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { resolveIsp } from "@/lib/isp";
 import { z } from "zod";
+import { renderTemplate } from "@/lib/sms-templates";
 
 const runSchema = z.object({
   kind: z.enum(["suspend", "resume", "expire", "extend", "notify_expiry"]),
@@ -92,15 +93,39 @@ export async function POST(req: Request) {
     const { data: provider } = await svc.from("sms_providers")
       .select("status").eq("isp_id", r.ispId).eq("provider", "topspeed").maybeSingle();
     const sendable = provider?.status === "active";
+
+    // One template read for the whole run. The stored template wins when there
+    // is one, so editing it changes what subscribers get; the inline wording is
+    // only a fallback for an ISP that has never touched the defaults.
+    const [{ data: tpl }, { data: isp }] = await Promise.all([
+      svc.from("sms_templates").select("body, enabled").eq("isp_id", r.ispId)
+        .eq("event", "expiry_reminder").eq("locale", "en").maybeSingle(),
+      svc.from("isps").select("name").eq("id", r.ispId).maybeSingle(),
+    ]);
+    // A disabled template means "do not send this event", not "use the default".
+    const templateOff = tpl !== null && tpl !== undefined && tpl.enabled === false;
+    const fallbackBody =
+      "Hi {{name}}, your {{isp}} subscription ({{customer_no}}) expires soon. Renew to stay online.";
+
     const rows = found
       .filter((c) => c.phone)
       .map((c) => ({
         isp_id: r.ispId,
         to_phone: c.phone as string,
         event: "expiry_reminder",
-        body: `Hi ${c.full_name}, your NETPID subscription (${c.customer_no}) expires soon. Renew to stay online.`,
-        status: sendable ? "queued" as const : "skipped" as const,
-        error: sendable ? null : "SMS provider not active — enable it under SMS",
+        body: renderTemplate(tpl?.body ?? fallbackBody, {
+          name: c.full_name ?? "",
+          customer_no: c.customer_no ?? "",
+          phone: c.phone as string,
+          isp: isp?.name ?? "",
+          expiry: c.expiry_date ? new Date(c.expiry_date).toLocaleDateString("en-KE") : "",
+        }),
+        status: templateOff
+          ? "skipped" as const
+          : sendable ? "queued" as const : "skipped" as const,
+        error: templateOff
+          ? "Template disabled — nothing sent"
+          : sendable ? null : "SMS provider not active — enable it under SMS",
       }));
     if (rows.length) {
       const { error } = await svc.from("sms_logs").insert(rows);

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import TemplatesPanel from "./TemplatesPanel";
 
 export default function SmsPage() {
   const [data, setData] = useState<{ logs: { id: string; to_phone: string; event: string | null; status: string; created_at: string }[]; usage: { day: string; sent: number; failed: number }[] } | null>(null);
@@ -27,6 +28,7 @@ export default function SmsPage() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-3xl font-black">SMS (TOPSPEED)</h1>
+      <TemplatesPanel />
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <form onSubmit={save} className="card space-y-3">
           <p className="font-semibold">Settings & limits</p>

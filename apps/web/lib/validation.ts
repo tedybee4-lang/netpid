@@ -46,6 +46,22 @@ export const initiatePaymentSchema = z.object({
   phone: z.string().min(7).max(20),
 });
 
+// Captive-portal purchase (public, no session). Note what is deliberately
+// ABSENT: there is no `amount` and no `customer_id`. The buyer cannot price
+// their own bundle (the server reads the package) and cannot name an arbitrary
+// account (it is derived from the paying phone). `kind` picks the paid-now
+// path (STK push) or the already-paid path (M-Pesa receipt claim).
+export const portalPaySchema = z.object({
+  package_id: z.string().uuid(),
+  phone: z.string().min(7).max(20),
+  full_name: z.string().max(160).optional().or(z.literal("")),
+  kind: z.enum(["stk", "manual"]).default("stk"),
+  mpesa_receipt: z.string().max(32).optional().or(z.literal("")),
+}).refine(
+  (v) => v.kind !== "manual" || (v.mpesa_receipt ?? "").trim().length >= 4,
+  { message: "Enter the M-Pesa receipt code for a manual payment" },
+);
+
 export const createRouterSchema = z.object({
   name: z.string().min(2).max(120),
   host: z.string().ip(),
@@ -101,6 +117,63 @@ export const smsSettingsSchema = z.object({
   monthly_limit: z.number().int().min(0).max(1000000),
   enabled: z.boolean(),
 });
+
+// SMS template create. `event` is the queue key the worker looks up, so it is
+// restricted to the characters that can appear in one; `body` is capped well
+// under a multipart SMS limit before concatenation is even considered.
+export const smsTemplateSchema = z.object({
+  event: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/, "lowercase letters, digits, - or _ only"),
+  locale: z.string().min(2).max(8).regex(/^[a-zA-Z-]+$/).default("en"),
+  body: z.string().min(1, "Template body is required").max(480),
+  enabled: z.boolean().default(true),
+});
+
+// SMS template update. Deliberately explicit optional fields with NO defaults:
+// a `.partial()` of the schema above would silently re-apply `locale`/`enabled`
+// defaults to keys the caller never sent, overwriting real values with "en"/true.
+export const smsTemplateUpdateSchema = z.object({
+  body: z.string().min(1, "Template body is required").max(480).optional(),
+  enabled: z.boolean().optional(),
+  locale: z.string().min(2).max(8).regex(/^[a-zA-Z-]+$/).optional(),
+}).refine((v) => Object.keys(v).length > 0, { message: "Nothing to update" });
+
+// IP pool. The range CONTENT is validated by lib/ip-pools.ts (it needs real IP
+// arithmetic Zod cannot express); this only constrains shape and length.
+const poolName = z.string().trim()
+  .min(1, "Name is required").max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/, "use letters, digits, space, dot, underscore or hyphen");
+
+export const ipPoolSchema = z.object({
+  name: poolName,
+  ranges: z.string().trim().min(1, "At least one range is required").max(4000),
+});
+
+// Same no-defaults rule as the template update schema.
+export const ipPoolUpdateSchema = z.object({
+  name: poolName.optional(),
+  ranges: z.string().trim().min(1, "At least one range is required").max(4000).optional(),
+}).refine((v) => Object.keys(v).length > 0, { message: "Nothing to update" });
+
+// Platform announcement. `audience` mirrors the table's CHECK constraint exactly,
+// so an out-of-range value is rejected here instead of becoming a 400 from
+// Postgres. Default is a draft: nothing is published until asked for.
+export const announcementSchema = z.object({
+  title: z.string().trim().min(3, "Title is required").max(160),
+  body: z.string().trim().min(3, "Message is required").max(5000),
+  audience: z.enum(["isps", "platform", "all"]).default("isps"),
+  published: z.boolean().default(false),
+});
+
+// Publish / unpublish. `published` is optional so "unpublish" is an explicit act.
+export const announcementUpdateSchema = z.object({
+  title: z.string().trim().min(3, "Title is required").max(160).optional(),
+  body: z.string().trim().min(3, "Message is required").max(5000).optional(),
+  audience: z.enum(["isps", "platform", "all"]).optional(),
+  published: z.boolean().optional(),
+}).refine((v) => Object.keys(v).length > 0, { message: "Nothing to update" });
+
+
+
 
 // Staff invitation. Role slugs are the seeded isp_roles set — "owner" is
 // deliberately excluded: it is only assigned at ISP creation, so nobody can

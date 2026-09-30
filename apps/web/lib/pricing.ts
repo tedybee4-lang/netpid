@@ -116,3 +116,64 @@ export function monthlyEstimate(routers: number, pppoe = 0, staticSubs = 0): num
 
 export const PLAN_SLUGS = TIERS.filter((t) => !t.custom).map((t) => t.slug);
 export const DEFAULT_PLAN_SLUG = "starter-pilot";
+
+/**
+ * Itemised monthly estimate. Every figure comes from RATES above, so the
+ * calculator can never drift from the published price list.
+ *
+ * `routerCapReached` is reported so the UI can say WHY the router line stopped
+ * growing instead of leaving the operator to wonder if it is a bug.
+ */
+export interface Estimate {
+  routerFee: number;
+  pppoe: number;
+  statics: number;
+  sms: number;
+  monthly: number;
+  install: number;
+  firstInvoice: number;
+  /** Routers that are charged for (the rest are free once the cap is hit). */
+  billableRouters: number;
+  routerCapReached: boolean;
+  /** Cap expressed in routers, for "N more routers are free". */
+  capInRouters: number;
+}
+
+export function estimate(
+  routers: number,
+  pppoe = 0,
+  statics = 0,
+  sms = 0,
+  includeInstall = false,
+): Estimate {
+  const r = Math.max(0, Math.floor(routers || 0));
+  const p = Math.max(0, Math.floor(pppoe || 0));
+  const s = Math.max(0, Math.floor(statics || 0));
+  const m = Math.max(0, Math.floor(sms || 0));
+
+  const billableRouters = Math.min(r, RATES.routerFeeCap / RATES.perRouter);
+  const routerFeeTotal = routerFee(r);
+  const pppoeTotal = p * RATES.perPppoeSub;
+  const staticTotal = s * RATES.perStaticSub;
+  const smsTotal = m * RATES.perSms;
+  const monthly = routerFeeTotal + pppoeTotal + staticTotal + smsTotal;
+  const install = includeInstall ? RATES.installFee : 0;
+
+  return {
+    routerFee: routerFeeTotal,
+    pppoe: pppoeTotal,
+    statics: staticTotal,
+    sms: smsTotal,
+    monthly,
+    install,
+    firstInvoice: monthly + install,
+    billableRouters,
+    routerCapReached: r * RATES.perRouter > RATES.routerFeeCap,
+    capInRouters: Math.floor(RATES.routerFeeCap / RATES.perRouter),
+  };
+}
+
+/** Yearly price for a plan, or null when the plan is custom/unavailable. */
+export function yearlyTotal(tier: Tier): number | null {
+  return tier.custom || tier.priceYearly < 0 ? null : tier.priceYearly;
+}

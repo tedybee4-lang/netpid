@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import BackupsPanel from "./BackupsPanel";
 
 type Job = { id: string; kind: string; status: string; last_error: string | null };
 type Health = {
@@ -128,7 +129,6 @@ export default function RouterDetail() {
         <div className="mt-3 flex flex-wrap gap-2">
           <button className="btn-primary" onClick={() => action("test")}>Test connection</button>
           <button className="btn-ghost" onClick={() => action("capabilities")}>Detect capabilities</button>
-          <button className="btn-ghost" onClick={() => action("backup")}>Backup now</button>
         </div>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <input className="input" placeholder="username to disconnect"
@@ -145,6 +145,8 @@ export default function RouterDetail() {
           </p>
         )}
       </div>
+
+      <BackupsPanel routerId={id} />
 
       <div className="card mt-4">
         <h2 className="panel-title">Recent health checks ({health.length})</h2>

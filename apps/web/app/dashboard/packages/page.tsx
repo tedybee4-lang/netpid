@@ -53,7 +53,10 @@ export default async function PackagesPage() {
             <div key={p.id} className="card flex flex-col">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="truncate font-extrabold text-slate-900">{p.name}</p>
+                  <Link href={`/dashboard/packages/${p.id}`}
+                    className="truncate font-extrabold text-slate-900 hover:text-indigo-600 hover:underline">
+                    {p.name}
+                  </Link>
                   <p className="text-xs text-slate-500">
                     per {p.duration_value} {p.duration_unit}
                     {p.simultaneous_users > 1 ? ` · ${p.simultaneous_users} logins` : ""}
@@ -94,6 +97,10 @@ export default async function PackagesPage() {
                 {p.data_cap_mb ? <span className="badge badge-mute">{bytes(p.data_cap_mb * 1024 * 1024)} cap</span> : null}
                 {!p.enabled && <span className="badge badge-bad">disabled</span>}
               </div>
+
+              <Link href={`/dashboard/packages/${p.id}`} className="btn-ghost btn-sm mt-4 self-start">
+                Edit package
+              </Link>
             </div>
           ))}
         </div>
