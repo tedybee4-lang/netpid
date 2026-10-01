@@ -5,13 +5,19 @@ import { verifyDarajaCreds } from "@/lib/daraja-push";
 import { resolveIsp } from "@/lib/isp";
 import { z } from "zod";
 
-// ISP admin: Daraja credential storage. The envelope is encrypted server-side
-// with APP_ENCRYPTION_KEY and never returned by any read path.
+// ISP admin: payment settings. The envelope is encrypted server-side with
+// APP_ENCRYPTION_KEY and never returned by any read path.
+//
+// AN ISP ONLY NEEDS A TILL OR A PAYBILL NUMBER. That is what most Kenyan ISPs
+// actually run: customers walk to a till, pay, and type the receipt back in.
+// The Daraja credentials below are what enable STK Push, which is a different,
+// optional product. Requiring them made the one thing every operator needs
+// impossible to save, so they are all optional and are only read when supplied.
 const schema = z.object({
-  consumer_key: z.string().min(4).max(256),
-  consumer_secret: z.string().min(4).max(512),
-  passkey: z.string().min(4).max(512),
-  shortcode: z.string().min(4).max(20),
+  consumer_key: z.string().max(256).optional().or(z.literal("")),
+  consumer_secret: z.string().max(512).optional().or(z.literal("")),
+  passkey: z.string().max(512).optional().or(z.literal("")),
+  shortcode: z.string().max(20).optional().or(z.literal("")),
   environment: z.enum(["sandbox", "production"]).default("sandbox"),
   till_number: z.string().max(20).optional().or(z.literal("")),
   paybill: z.string().max(20).optional().or(z.literal("")),
@@ -97,33 +103,49 @@ export async function POST(req: Request) {
   const allowed = await checkRateLimit(svc, svc, `daraja-save:${a.ok.ispId}`, 10, 3600);
   if (!allowed) return NextResponse.json({ error: "Rate limited." }, { status: 429 });
 
+  // The Daraja credentials are OPTIONAL. They enable STK Push; they are not
+  // needed to take payments at a till. A partial set is treated as none, so a
+  // half-filled form cannot produce a provider that looks connected but 502s on
+  // every push.
+  const supplied = {
+    consumer_key: (d.consumer_key ?? "").trim(),
+    consumer_secret: (d.consumer_secret ?? "").trim(),
+    passkey: (d.passkey ?? "").trim(),
+    shortcode: (d.shortcode ?? "").trim(),
+  };
+  const given = Object.values(supplied).filter(Boolean).length;
+  const hasCreds = given === 4;
+  if (given > 0 && given < 4) {
+    return NextResponse.json({
+      error: "Fill in all four Daraja fields or none of them. Leaving one blank "
+        + "would save a half-configured app that fails on every STK push.",
+    }, { status: 400 });
+  }
+  if (!hasCreds && !target.method) {
+    return NextResponse.json({
+      error: "Enter the Till or PayBill number your customers pay to.",
+    }, { status: 400 });
+  }
+
   // Prove the credentials against Daraja BEFORE marking the provider active.
   // A saved-but-unverified secret is how an ISP ends up with a "connected"
   // badge and a 502 on every STK push, so 'active' is reserved for credentials
   // Safaricom has actually accepted.
-  const candidate = {
-    consumer_key: d.consumer_key.trim(),
-    consumer_secret: d.consumer_secret.trim(),
-    passkey: d.passkey.trim(),
-    shortcode: d.shortcode.trim(),
-    environment: d.environment,
-  };
-  let verified = true;
+  const candidate = { ...supplied, environment: d.environment };
+  let verified = false;
   let warning: string | null = null;
-  try {
-    await verifyDarajaCreds(candidate);
-  } catch (e) {
-    verified = false;
-    warning = e instanceof Error ? e.message : "Daraja rejected the credentials";
+  if (hasCreds) {
+    verified = true;
+    try {
+      await verifyDarajaCreds(candidate);
+    } catch (e) {
+      verified = false;
+      warning = e instanceof Error ? e.message : "Daraja rejected the credentials";
+    }
   }
 
-  let encrypted: string;
-  try {
-    encrypted = encryptSecret(JSON.stringify(candidate));
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Encryption failed" }, { status: 500 });
-  }
-
+  // No credentials means STK Push stays off. Manual payments against the till
+  // or paybill are unaffected, which is the point: the operator keeps working.
   const { data: provider, error } = await svc.from("payment_providers").upsert({
     isp_id: a.ok.ispId, provider: "daraja",
     payment_method: target.method, till_number: target.till, paybill: target.paybill,
@@ -132,10 +154,33 @@ export async function POST(req: Request) {
   if (error || !provider) {
     return NextResponse.json({ error: error?.message ?? "Could not save" }, { status: 400 });
   }
-  await svc.from("payment_provider_credentials").upsert({
-    provider_id: (provider as { id: string }).id,
-    encrypted_secret: encrypted, key_version: 1,
-  }, { onConflict: "provider_id" });
+
+  // The envelope is only written when credentials were actually supplied. An
+  // ISP running on a till must not have a row implying a Daraja app exists, and
+  // an existing envelope is left alone when they save just their number, so
+  // re-saving the till never silently switches STK Push off.
+  if (hasCreds) {
+    let encrypted: string;
+    try {
+      encrypted = encryptSecret(JSON.stringify(candidate));
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Encryption failed" }, { status: 500 });
+    }
+    await svc.from("payment_provider_credentials").upsert({
+      provider_id: (provider as { id: string }).id,
+      encrypted_secret: encrypted, key_version: 1,
+    }, { onConflict: "provider_id" });
+  } else {
+    const { data: existingEnvelope } = await svc.from("payment_provider_credentials")
+      .select("provider_id").eq("provider_id", (provider as { id: string }).id).maybeSingle();
+    if (existingEnvelope) {
+      // Credentials were stored on an earlier save. Leave the envelope in place
+      // and keep the provider active so STK Push keeps working; only a deliberate
+      // removal should turn it off, and that is not something this form does.
+      await svc.from("payment_providers")
+        .update({ status: "active" }).eq("id", (provider as { id: string }).id);
+    }
+  }
 
   // Mirror the live pay target onto isp_settings. The captive portal is
   // anonymous and reads that table, so this is how the customer ever sees which
@@ -167,8 +212,9 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     ok: true, verified, environment: d.environment,
-    warning: verified
-      ? null
-      : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`,
+    stk_push: hasCreds ? (verified ? "on" : "off") : "off",
+    warning: hasCreds
+      ? (verified ? null : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`)
+      : null,
   });
 }

@@ -78,8 +78,9 @@ export default function QuickAddRouter() {
             placeholder="Nairobi Core 1" value={name}
             onChange={(e) => setName(e.target.value)} />
           <p className="hint">
-            That is all you need. NETPID assigns the management IP, API credentials,
-            RADIUS NAS and shared secret from your provisioning defaults.
+            That is all you need. NETPID assigns the management IP, API
+            credentials, RADIUS server, NAS and shared secret for you. There is
+            no RADIUS address for you to look up or type in.
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">

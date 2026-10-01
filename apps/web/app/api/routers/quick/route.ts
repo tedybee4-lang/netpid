@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolveIsp } from "@/lib/isp";
 import { createServiceClient } from "@/lib/supabase/server";
 import { checkRateLimit, encryptSecret, randomSecret } from "@/lib/secrets";
+import { resolveRadiusHost } from "@/lib/radius-host";
 import { buildRouterosScripts, normalizeRosVersion, rosName } from "@/lib/routeros";
 import { z } from "zod";
 
@@ -86,10 +87,20 @@ export async function POST(req: Request) {
   }
   const d = defaults as Defaults;
 
-  if (!d.radius_server) {
+  // The RADIUS address comes from NETPID, not from the operator. An ISP that
+  // already has one keeps it; otherwise they inherit the platform server and
+  // are never asked for an address they have no way of knowing.
+  const radius = await resolveRadiusHost(svc, r.ispId, d.radius_server);
+  if (!radius) {
+    // Only reachable if the platform has not published a RADIUS server yet. The
+    // message is for the platform operator, not the ISP, and it says so.
+    console.error("no RADIUS server available for quick-add provisioning", {
+      ispId: r.ispId,
+    });
     return NextResponse.json({
-      error: "Set your RADIUS server address once in Network > Provisioning defaults, then add routers by name.",
-    }, { status: 400 });
+      error: "Router provisioning is not available yet. NETPID has not published a "
+        + "RADIUS server — contact support if you see this.",
+    }, { status: 503 });
   }
 
   // Reserve everything this ISP already uses so we never hand out a duplicate.
@@ -118,7 +129,7 @@ export async function POST(req: Request) {
     isp_id: r.ispId, name, identity, host,
     api_port: d.api_port, api_ssl_port: d.api_ssl_port,
     api_username: d.api_username, use_ssl: d.use_ssl,
-    radius_server_host: d.radius_server,
+    radius_server_host: radius.host,
     ros_version: version, script_ros_version: version,
     provisioned_via: "quick", status: "unknown",
   }).select("id,name,host").single();
@@ -157,7 +168,7 @@ export async function POST(req: Request) {
     // Both scripts, always: the operator pastes the one that matches their box.
     scripts: buildRouterosScripts({
       shortname,
-      radiusServer: d.radius_server,
+      radiusServer: radius.host,
       secret: secretOnce,
       routerIp: host,
       authPort: d.radius_auth_port,
@@ -176,7 +187,7 @@ export async function POST(req: Request) {
     defaults_applied: {
       host, api_username: d.api_username, api_port: d.api_port,
       api_ssl_port: d.api_ssl_port, use_ssl: d.use_ssl,
-      radius_server: d.radius_server, shortname,
+      radius_server: radius.host, radius_source: radius.source, shortname,
     },
     warning: "Copy the RADIUS secret and the API password now — neither is shown again.",
   }, { status: 201 });
