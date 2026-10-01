@@ -11,6 +11,7 @@ const NAV: { href: string; label: string; icon: string }[] = [
   { href: "/admin/system-health", label: "System Health", icon: "pulse" },
   { href: "/admin/audit", label: "Audit Logs", icon: "clock" },
   { href: "/admin/announcements", label: "Announcements", icon: "megaphone" },
+  { href: "/admin/billing", label: "Monthly Collections", icon: "receipt" },
   { href: "/admin/settings", label: "Settings", icon: "cog" },
 ];
 
@@ -21,6 +22,7 @@ const ICONS: Record<string, string> = {
   pulse: "M2 12h4l3-8 6 16 3-8h4",
   clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3.5 2",
   megaphone: "M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1zM16.5 9.5a4 4 0 0 1 0 5",
+  receipt: "M6 2h12v20l-3-2-3 2-3-2-3 2V2zM9 7h6M9 11h6M9 15h3",
   cog: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M19.4 13.5l1.7 1-1.9 3.2-1.9-.7a7.6 7.6 0 0 1-2 .8l-.4 2h-3.8l-.4-2a7.6 7.6 0 0 1-2-.8l-1.9.7-1.9-3.2 1.7-1a7.7 7.7 0 0 1 0-2.3l-1.7-1 1.9-3.2 1.9.7a7.6 7.6 0 0 1 2-.8l.4-2h3.8l.4 2a7.6 7.6 0 0 1 2 .8l1.9-.7 1.9-3.2-1.7-1a7.7 7.7 0 0 1 0 2.3z",
 };
 
