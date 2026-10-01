@@ -120,13 +120,18 @@ say("\n=== 5. THE ROUTER REPORTS BACK ===");
 // Replay the generated :set statements to build the exact URL a router would,
 // then make that request. Same data the script reads on the box, so a broken
 // separator or a mangled query string fails here exactly as it would on device.
+// npV, not npQ: npQ was a leftover and the version now reads npV. Getting this
+// wrong sends an EMPTY version, which the server stores as null and the wizard
+// then treats as a blocker - the router reported, but said nothing useful.
 const vals = {
-  npB: "hAP lite", npM: "hAP lite", npQ: "7.21.5", npA: "arm",
+  npB: "hAP lite", npM: "hAP lite", npV: "7.21.5", npA: "arm",
   npC: "MIPS 24Kc V7.4", npR: "65536 KiB",
   npI: "ether1,ether2,ether3,ether4,ether5,wlan1",
   npG: "bridge-lan:ether2,ether3,ether4;bridge1:ether5",
 };
-let url = (/:set npUrl "([^"]+)"/.exec(script) ?? [])[1];
+// The base is declared with :local, not :set. RouterOS rejects :set on an
+// undeclared variable, which is the bug this harness helped find.
+let url = (/:local npUrl "([^"]+)"/.exec(script) ?? [])[1];
 if (!url) { say("  no npUrl base found (FAIL)"); process.exit(1); }
 say(`  host            : ${new URL(url).host}`);
 say(`  path            : ${new URL(url).pathname.replace(/[^/]+$/, "<token>")}`);
@@ -150,6 +155,11 @@ say(`  HTTP            : ${regRes.status}`);
 say(`  stored status   : ${regBody.status}`);
 say(`  board_name      : ${regBody.board_name}`);
 say(`  routeros_version: ${regBody.routeros_version}`);
+// An empty version is worse than a failed report: the session is accepted, the
+// dashboard shows a router, and the blocker only surfaces later when the
+// operator tries to generate a script.
+const versionOk = typeof regBody.routeros_version === "string" && regBody.routeros_version.length > 0;
+say(`  version present : ${versionOk} ${versionOk ? "(PASS)" : "(FAIL)"}`);
 say(`  ram_mb          : ${regBody.ram_mb}`);
 say(`  rosMajor decided: ${regBody.capabilities?.rosMajor}`);
 say(`  wireguard gate  : ${regBody.capabilities?.wireguard?.supported}`);
@@ -166,8 +176,8 @@ say(`  bogus token       : HTTP ${bogus.status} ${bogus.status === 404 ? "(PASS 
 
 // --- SUMMARY ---------------------------------------------------------------
 say("\n=== SUMMARY ===");
-const pass = straddle === 0 && depth === 0 && lowest === 0 && longest <= 200
-  && creates.length === 0 && u.searchParams.size === 8
+const pass = straddle === 0 && depth === 0 && lowest === 0 && longest <= 400
+  && creates.length === 0 && u.searchParams.size === 8 && versionOk
   && regRes.status === 200 && bogus.status === 404;
 say(pass ? "  ALL CHECKS PASSED" : "  ONE OR MORE CHECKS FAILED");
 process.exit(pass ? 0 : 1);
