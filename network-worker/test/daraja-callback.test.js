@@ -186,6 +186,90 @@ test("sendStkPush converts minor units to whole shillings and signs correctly", 
   assert.match(pushBody.Timestamp, /^\d{14}$/);
 });
 
+test("one platform app collects into each ISP's own Till, and never the app's", async (t) => {
+  // NETPID authenticates with ONE app (migration 0044) but must name the
+  // RECEIVER per push. This is the property the whole platform-app change rests
+  // on: the OAuth token and the passkey belong to the platform, while
+  // BusinessShortCode and PartyB must be the individual ISP's Till. Getting this
+  // backwards is what sent a customer to a Daraja sandbox account while the
+  // operator's own till sat unused.
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+
+  const authHeaders = [];
+  const bodies = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("/oauth/v1/generate")) {
+      authHeaders.push(init.headers.authorization);
+      return new Response(JSON.stringify({ access_token: "tok", expires_in: "3599" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    bodies.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({
+      ResponseCode: "0", MerchantRequestID: "m-1", CheckoutRequestID: "c-1",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  // The platform half, identical for every ISP.
+  const platform = { consumer_key: "PLATFORM_CK", consumer_secret: "PLATFORM_CS", passkey: "PLATFORM_PK" };
+  // Two ISPs, each with their own Till. getDarajaCreds() composes exactly this.
+  const ispOne = { ...platform, shortcode: "5441898", environment: "production" };
+  const ispTwo = { ...platform, shortcode: "2211000", environment: "production" };
+
+  for (const creds of [ispOne, ispTwo]) {
+    await sendStkPush(creds, {
+      phone: "254708374149", amountMinor: 10000,
+      accountRef: "C-0001", callbackUrl: "https://example.test/cb",
+    });
+  }
+
+  assert.equal(bodies.length, 2);
+  // Each push collects into THAT ISP's Till, as both the shortcode and PartyB.
+  assert.equal(bodies[0].BusinessShortCode, "5441898");
+  assert.equal(bodies[0].PartyB, "5441898");
+  assert.equal(bodies[1].BusinessShortCode, "2211000");
+  assert.equal(bodies[1].PartyB, "2211000");
+
+  // The password signs with the RECEIVER's shortcode and the PLATFORM passkey.
+  // If it ever used the app's own shortcode, Safaricom would reject the push.
+  const decoded = Buffer.from(bodies[0].Password, "base64").toString();
+  assert.equal(decoded, `5441898PLATFORM_PK${bodies[0].Timestamp}`);
+
+  // Authentication is the platform's, so both ISPs share one token: the cache
+  // is keyed on environment + consumer key, and there is exactly one OAuth call
+  // for the pair. Keying it on the shortcode would have fetched a token per ISP.
+  assert.equal(authHeaders.length, 1, "both ISPs must reuse the platform token");
+  const expected = `Basic ${Buffer.from("PLATFORM_CK:PLATFORM_CS").toString("base64")}`;
+  assert.equal(authHeaders[0], expected);
+
+  // Production really is production. A sandbox app collects every approval into
+  // a Safaricom test account while the operator believes they are taking money,
+  // so the environment must select the production host and not merely be passed
+  // along in the payload.
+  const urls = [];
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = async (url, init) => {
+    urls.push(String(url));
+    if (String(url).includes("/oauth/v1/generate")) {
+      return new Response(JSON.stringify({ access_token: "tok", expires_in: "3599" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({
+      ResponseCode: "0", MerchantRequestID: "m-1", CheckoutRequestID: "c-1",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await sendStkPush(ispOne, {
+    phone: "254708374149", amountMinor: 10000,
+    accountRef: "C-0001", callbackUrl: "https://example.test/cb",
+  });
+  assert.ok(
+    urls.every((u) => u.startsWith("https://api.safaricom.co.ke")),
+    `production must hit the live host, got: ${urls.join(", ")}`,
+  );
+});
+
   assert.notEqual(signCallback(raw, "pass-key"), signCallback(raw, "other-key"));
 
 test("verifyDarajaCreds rejects bad credentials even when a token is cached", async (t) => {

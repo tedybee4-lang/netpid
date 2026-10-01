@@ -9,10 +9,12 @@ function baseUrl(env: string): string {
 
 const TOKEN_CACHE = new Map<string, { token: string; exp: number }>();
 
-// Keyed by environment + shortcode + consumer key: two ISPs can share a
-// shortcode, and sandbox/production tokens are not interchangeable.
+// Keyed by environment + consumer key ONLY. The OAuth token belongs to the
+// app, not to a shortcode, and there is one app for the whole platform while
+// every ISP has their own shortcode. Keying on the shortcode fetched a fresh
+// token per ISP and cached it against a value that never varied.
 function cacheKey(c: DarajaCreds): string {
-  return `${c.environment}:${c.shortcode}:${c.consumer_key}`;
+  return `${c.environment}:${c.consumer_key}`;
 }
 
 async function accessToken(c: DarajaCreds, force = false): Promise<string> {

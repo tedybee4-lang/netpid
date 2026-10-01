@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { portalPaySchema } from "@/lib/validation";
 import { checkRateLimit } from "@/lib/secrets";
-import { getDarajaCreds, normalizeKe } from "@/lib/daraja";
+import { getDarajaCreds, getIspPayTarget, normalizeKe } from "@/lib/daraja";
 import { sendStkPush } from "@/lib/daraja-push";
 import { uidem } from "@/lib/isp";
 
@@ -143,19 +143,25 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
   }
 
   // ---- Path 1: pay now over STK Push --------------------------------------
-  const creds = await getDarajaCreds(ispId);
-  if (!creds) {
-    // The verified Daraja guard, restated for the public surface. The response
-    // body carries everything the portal needs to fall back to manual payment,
-    // so the customer is never left staring at a dead button.
+  // STK only. There is no manual path on the portal: the number the customer
+  // needs is inside the M-Pesa prompt Safaricom sends them, and printing a Till
+  // on the page only invited a receipt flow an operator had to confirm by hand.
+  //
+  // The two ways this can be unavailable are genuinely different problems, so
+  // they are reported differently: this ISP has no Till declared (the operator
+  // must fix it) versus the platform app is down (temporary, retry later).
+  const [creds, target] = await Promise.all([getDarajaCreds(ispId), getIspPayTarget(ispId)]);
+  if (!target) {
     return NextResponse.json({
-      error: "M-Pesa STK Push is not available on this portal yet.",
-      daraja_configured: false,
-      manual_available: true,
-      account_ref: ref,
-      amount: pkg.price,
-      message: "Pay to the Till/PayBill shown on this page, then submit your M-Pesa receipt code.",
+      error: "This network has not set up M-Pesa yet. Please contact the operator.",
+      manual_available: false,
     }, { status: 422 });
+  }
+  if (!creds) {
+    return NextResponse.json({
+      error: "M-Pesa is temporarily unavailable. Please try again shortly.",
+      manual_available: false,
+    }, { status: 503 });
   }
 
   const callbackUrl =

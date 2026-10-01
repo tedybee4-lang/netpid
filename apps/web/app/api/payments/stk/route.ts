@@ -39,8 +39,13 @@ export async function POST(req: Request) {
 
   const creds = await getDarajaCreds(r.ispId);
   if (!creds) {
+    // Either this ISP has not declared a Till, or NETPID's platform app is not
+    // live. Both are the operator's problem to fix, never the customer's, so
+    // the message says to use the dashboard rather than naming credentials an
+    // ISP no longer holds.
     return NextResponse.json({
-      error: "M-Pesa (Daraja) is not connected for this ISP. Add Daraja credentials in Settings, or record a manual M-Pesa payment instead.",
+      error: "M-Pesa is not available for this ISP yet. Enter your Till or PayBill "
+        + "number in Settings > M-Pesa payments.",
     }, { status: 422 });
   }
 

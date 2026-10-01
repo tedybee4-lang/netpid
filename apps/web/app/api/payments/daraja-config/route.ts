@@ -1,24 +1,22 @@
 import { NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { checkRateLimit, encryptSecret } from "@/lib/secrets";
-import { verifyDarajaCreds } from "@/lib/daraja-push";
+import { checkRateLimit } from "@/lib/secrets";
 import { resolveIsp } from "@/lib/isp";
+import { getPlatformDaraja } from "@/lib/daraja";
 import { z } from "zod";
 
-// ISP admin: payment settings. The envelope is encrypted server-side with
-// APP_ENCRYPTION_KEY and never returned by any read path.
+// ISP admin: declare the Till/PayBill their customers pay into.
 //
-// AN ISP ONLY NEEDS A TILL OR A PAYBILL NUMBER. That is what most Kenyan ISPs
-// actually run: customers walk to a till, pay, and type the receipt back in.
-// The Daraja credentials below are what enable STK Push, which is a different,
-// optional product. Requiring them made the one thing every operator needs
-// impossible to save, so they are all optional and are only read when supplied.
+// THAT IS THE ONLY THING AN ISP DECLARES. They hold no Daraja credentials.
+// NETPID runs one app (migration 0044) and authenticates the push; the number
+// below is the RECEIVER, so customer money lands in the ISP's own Till and
+// never passes through NETPID.
+//
+// Requiring per-ISP credentials was a multi-week Safaricom onboarding wall for
+// every operator, and it let an ISP set a shortcode that silently overrode their
+// declared Till — which is exactly how a customer ended up paying a Daraja
+// sandbox account.
 const schema = z.object({
-  consumer_key: z.string().max(256).optional().or(z.literal("")),
-  consumer_secret: z.string().max(512).optional().or(z.literal("")),
-  passkey: z.string().max(512).optional().or(z.literal("")),
-  shortcode: z.string().max(20).optional().or(z.literal("")),
-  environment: z.enum(["sandbox", "production"]).default("sandbox"),
   till_number: z.string().max(20).optional().or(z.literal("")),
   paybill: z.string().max(20).optional().or(z.literal("")),
   // Which of the two is LIVE. Optional so an older client that never sends it
@@ -67,21 +65,23 @@ export async function GET(req: Request) {
   const a = await requireAdmin(req);
   if ("error" in a) return a.error;
   const svc = createServiceClient();
-  const { data: providers } = await svc.from("payment_providers")
-    .select("id, provider, account_name, paybill, till_number, callback_url, status, payment_method")
-    .eq("isp_id", a.ok.ispId);
-  // Configured flags only — never secrets.
-  const rows = (providers ?? []).map((p) => {
-    const row = p as { provider: string; status: string; paybill: string | null; till_number: string | null; callback_url: string | null; payment_method: string | null };
-    return {
-      provider: row.provider, status: row.status,
-      paybill: row.paybill, till_number: row.till_number, callback_url: row.callback_url,
-      payment_method: row.payment_method ?? (row.till_number ? "till" : row.paybill ? "paybill" : null),
-    };
-  });
+  const { data } = await svc.from("payment_providers")
+    .select("payment_method,till_number,paybill,status").eq("isp_id", a.ok.ispId)
+    .eq("provider", "daraja").maybeSingle();
+  const row = (data ?? {}) as {
+    payment_method?: "till" | "paybill" | null;
+    till_number?: string | null; paybill?: string | null; status?: string | null;
+  };
+  const platform = await getPlatformDaraja();
   return NextResponse.json({
-    providers: rows,
-    daraja_configured: rows.some((x) => x.provider === "daraja" && x.status === "active"),
+    daraja_configured: row.status === "active",
+    payment_method: row.payment_method ?? null,
+    till_number: row.till_number ?? null,
+    paybill: row.paybill ?? null,
+    // The ISP never sets this. They need to know whether their Till will
+    // actually collect, and the only honest answer comes from the platform.
+    platform_app_configured: platform !== null,
+    environment: platform?.environment ?? null,
   });
 }
 
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
   if ("error" in a) return a.error;
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid input" }, { status: 400 });
   }
   const d = parsed.data;
   const svc = createServiceClient();
@@ -103,99 +103,19 @@ export async function POST(req: Request) {
   const allowed = await checkRateLimit(svc, svc, `daraja-save:${a.ok.ispId}`, 10, 3600);
   if (!allowed) return NextResponse.json({ error: "Rate limited." }, { status: 429 });
 
-  // The Daraja credentials are OPTIONAL. They enable STK Push; they are not
-  // needed to take payments at a till. A partial set is treated as none, so a
-  // half-filled form cannot produce a provider that looks connected but 502s on
-  // every push.
-  const supplied = {
-    consumer_key: (d.consumer_key ?? "").trim(),
-    consumer_secret: (d.consumer_secret ?? "").trim(),
-    passkey: (d.passkey ?? "").trim(),
-    shortcode: (d.shortcode ?? "").trim(),
-  };
-  const given = Object.values(supplied).filter(Boolean).length;
-  const hasCreds = given === 4;
-  if (given > 0 && given < 4) {
-    return NextResponse.json({
-      error: "Fill in all four Daraja fields or none of them. Leaving one blank "
-        + "would save a half-configured app that fails on every STK push.",
-    }, { status: 400 });
-  }
-  if (!hasCreds && !target.method) {
-    return NextResponse.json({
-      error: "Enter the Till or PayBill number your customers pay to.",
-    }, { status: 400 });
-  }
-
-  // Daraja collects STK Push money into the Till/PayBill its app was ISSUED
-  // for: sendStkPush uses the stored shortcode as both BusinessShortCode and
-  // PartyB, and the declared till_number is never sent to Safaricom at all.
-  //
-  // So a shortcode that differs from the ISP's live pay target is not a
-  // cosmetic mismatch - it silently routes every customer payment into a
-  // different account, which is how an ISP ends up with a working portal and
-  // an empty till. Reject it here rather than letting it reach Safaricom.
-  const declaredNumber = target.method === "till" ? target.till : target.paybill;
-  if (hasCreds && declaredNumber && supplied.shortcode !== declaredNumber) {
-    return NextResponse.json({
-      error: `Your Daraja app was issued for shortcode ${supplied.shortcode}, but your `
-        + `${target.method === "till" ? "Till" : "PayBill"} is ${declaredNumber}. Daraja pays `
-        + `STK Push money into the number its app was issued for, so customers would pay `
-        + `${supplied.shortcode} and never ${declaredNumber}. Make them the same number, or `
-        + `leave the Daraja fields blank and take payments at your till.`,
-    }, { status: 400 });
-  }
-
-  // Prove the credentials against Daraja BEFORE marking the provider active.
-  // A saved-but-unverified secret is how an ISP ends up with a "connected"
-  // badge and a 502 on every STK push, so 'active' is reserved for credentials
-  // Safaricom has actually accepted.
-  const candidate = { ...supplied, environment: d.environment };
-  let verified = false;
-  let warning: string | null = null;
-  if (hasCreds) {
-    verified = true;
-    try {
-      await verifyDarajaCreds(candidate);
-    } catch (e) {
-      verified = false;
-      warning = e instanceof Error ? e.message : "Daraja rejected the credentials";
-    }
-  }
-
-  // No credentials means STK Push stays off. Manual payments against the till
-  // or paybill are unaffected, which is the point: the operator keeps working.
-  // STK Push state is carried over, never derived from this save. Saving a Till
-  // number on its own must not turn STK on, and must not turn it off either:
-  // an ISP editing their till number is not making a decision about Daraja.
-  // The previous "envelope exists -> force active" rule was actively harmful:
-  // it re-enabled STK Push against a stale sandbox app, routing customer money
-  // to Safaricom's test account every time the ISP saved their own till.
-  const { data: priorProvider } = await svc.from("payment_providers")
-    .select("id, status").eq("isp_id", a.ok.ispId).eq("provider", "daraja").maybeSingle();
+  // active means "STK Push should collect here". That needs both halves: an ISP
+  // target AND a platform app. Declaring a Till while the platform has no app
+  // leaves the ISP active-but-silent, which reads as "connected and working".
+  const platform = await getPlatformDaraja();
+  const live = target.method !== null && platform !== null;
 
   const { data: provider, error } = await svc.from("payment_providers").upsert({
     isp_id: a.ok.ispId, provider: "daraja",
     payment_method: target.method, till_number: target.till, paybill: target.paybill,
-    status: hasCreds ? (verified ? "active" : "disabled") : (priorProvider?.status ?? "disabled"),
+    status: live ? "active" : "disabled",
   }, { onConflict: "isp_id,provider" }).select("id").single();
   if (error || !provider) {
     return NextResponse.json({ error: error?.message ?? "Could not save" }, { status: 400 });
-  }
-
-  // The envelope is only written when credentials were actually supplied. An
-  // ISP running on a till must not have a row implying a Daraja app exists.
-  if (hasCreds) {
-    let encrypted: string;
-    try {
-      encrypted = encryptSecret(JSON.stringify(candidate));
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Encryption failed" }, { status: 500 });
-    }
-    await svc.from("payment_provider_credentials").upsert({
-      provider_id: (provider as { id: string }).id,
-      encrypted_secret: encrypted, key_version: 1,
-    }, { onConflict: "provider_id" });
   }
 
   // Mirror the live pay target onto isp_settings. The captive portal is
@@ -206,51 +126,37 @@ export async function POST(req: Request) {
   //
   // Cleared to null when the ISP sets the method back to "Not set yet" — a stale
   // number on a public page is worse than no number.
-  if (a.ok.ispId) {
-    const { data: existing } = await svc.from("isp_settings")
-      .select("isp_id").eq("isp_id", a.ok.ispId).maybeSingle();
-    if (existing) {
-      await svc.from("isp_settings").update({
-        pay_method: target.method,
-        pay_number: target.method === "till" ? target.till : target.paybill,
-      }).eq("isp_id", a.ok.ispId);
-    }
+  const { data: existing } = await svc.from("isp_settings")
+    .select("isp_id").eq("isp_id", a.ok.ispId).maybeSingle();
+  if (existing) {
+    await svc.from("isp_settings").update({
+      pay_method: target.method,
+      pay_number: target.method === "till" ? target.till : target.paybill,
+    }).eq("isp_id", a.ok.ispId);
   }
 
   // ISP-scoped audit trail (audit_logs, not the Super Admin platform log).
-  // Metadata records the outcome only — never any part of the secret.
+  // Nothing secret is ever recorded here — the ISP supplies no secret.
   await svc.from("audit_logs").insert({
     actor_id: a.ok.user.id, actor_type: "user", isp_id: a.ok.ispId,
     action: "payment_provider_updated", resource: "payment_providers",
     resource_id: (provider as { id: string }).id,
-    metadata: { provider: "daraja", environment: d.environment, verified },
+    metadata: {
+      provider: "daraja", payment_method: target.method,
+      collects_into: target.method === "till" ? target.till : target.paybill,
+    },
   });
 
   return NextResponse.json({
     ok: true,
-    // null, not false, when no credentials were supplied. "false" would claim
-    // Safaricom rejected something that was never sent, and the client shows
-    // a rejection error on it.
-    verified: hasCreds ? verified : null,
-    credentials_stored: hasCreds,
-    environment: d.environment,
-    stk_push: hasCreds ? (verified ? "on" : "off") : "off",
-    // The number customer money actually lands in. For STK Push this is the
-    // shortcode, NOT the declared till - showing the till here would be a lie.
-    collects_into: hasCreds ? supplied.shortcode : declaredNumber,
-    manual_pay_number: declaredNumber,
-    // Sandbox routes every push to a Safaricom test account. No real money
-    // moves, so the operator has to be told rather than left to discover it
-    // from a customer's M-Pesa prompt.
-    test_mode: d.environment === "sandbox",
-    warning: hasCreds
-      ? (verified
-        ? (d.environment === "sandbox"
-          ? `STK Push is connected in SANDBOX. Customers approving this prompt pay `
-            + `${supplied.shortcode} in Safaricom's test account - no real money reaches `
-            + `you. Switch to production to take real payments.`
-          : null)
-        : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`)
+    payment_method: target.method,
+    collects_into: target.method === "till" ? target.till : target.paybill,
+    stk_push: live ? "on" : "off",
+    platform_app_configured: platform !== null,
+    environment: platform?.environment ?? null,
+    warning: target.method && !platform
+      ? "Saved. NETPID has not finished setting up M-Pesa yet, so payments will not "
+        + "go through until the platform app is live. Your number is saved."
       : null,
   });
 }
