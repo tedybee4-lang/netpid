@@ -34,6 +34,29 @@ const MODES: Mode[] = ["HOTSPOT", "PPPOE", "HOTSPOT_PPPOE"];
 const modeLabel = (m: Mode) =>
   m === "HOTSPOT_PPPOE" ? "HotSpot + PPPoE" : m === "HOTSPOT" ? "HotSpot" : "PPPoE";
 
+/**
+ * Prefilled, not blank.
+ *
+ * The operator's job here is to say which port is the WAN and which carry
+ * customers. Every number below is a house default chosen to be valid on a
+ * fresh box and to not collide with a LAN the router already has, so making the
+ * operator type them is work with no decision in it. They stay editable because
+ * an ISP with an existing numbering plan will need to change them, which is why
+ * they sit behind "Advanced" rather than being hidden.
+ *
+ * 10.5.50.0/24 for HotSpot, 100.64.10.0/24 for PPPoE. The PPPoE range is
+ * 100.64.0.0/10, the RFC 6598 shared address space, so it cannot clash with
+ * RFC 1918 space on the LAN side.
+ */
+const DEFAULTS: Record<string, string> = {
+  hsSubnet: "10.5.50.0/24",
+  hsRange: "10.5.50.10-10.5.50.250",
+  hsDns: "login.netpid.net",
+  pppoePool: "pool-pppoe",
+  pppoeRanges: "100.64.10.10-100.64.10.250",
+  pppoeLocal: "100.64.10.1",
+};
+
 export default function MikroTikSetupWizard({
   routerId,
   radiusSecret = "",
@@ -68,13 +91,14 @@ export default function MikroTikSetupWizard({
   const [wan, setWan] = useState("");
   const [hsPorts, setHsPorts] = useState<string[]>([]);
   const [pppPorts, setPppPorts] = useState<string[]>([]);
-  const [hsSubnet, setHsSubnet] = useState("");
-  const [hsRange, setHsRange] = useState("");
-  const [hsDns, setHsDns] = useState("");
-  const [pppoePool, setPppoePool] = useState("");
-  const [pppoeRanges, setPppoeRanges] = useState("");
-  const [pppoeLocal, setPppoeLocal] = useState("");
+  const [hsSubnet, setHsSubnet] = useState(DEFAULTS.hsSubnet);
+  const [hsRange, setHsRange] = useState(DEFAULTS.hsRange);
+  const [hsDns, setHsDns] = useState(DEFAULTS.hsDns);
+  const [pppoePool, setPppePool] = useState(DEFAULTS.pppoePool);
+  const [pppoeRanges, setPppoeRanges] = useState(DEFAULTS.pppoeRanges);
+  const [pppoeLocal, setPppoeLocal] = useState(DEFAULTS.pppoeLocal);
   const [secret, setSecret] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [script, setScript] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -168,6 +192,11 @@ export default function MikroTikSetupWizard({
 
   const step = !token ? 0 : status === "CAPABILITIES_DETECTED" ? 2 : script ? 3 : 1;
   const eth = ifaces.filter((i) => i.type === "ethernet");
+  // Wireless can serve customers, so it belongs in the HotSpot picker. It is
+  // never a WAN candidate and never a PPPoE port: a radio cannot be enslaved to
+  // a bridge, and PPPoE needs a wired endpoint.
+  const wireless = ifaces.filter((i) => i.type === "wireless");
+  const pickable = [...eth.filter((i) => i.name !== wan), ...wireless];
 
   return (
     <div className="space-y-4">
@@ -218,12 +247,23 @@ export default function MikroTikSetupWizard({
           {detectError ? (
             <p className="err-box">{detectError}</p>
           ) : (
+            <>
             <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
               <div><dt className="text-xs text-slate-500">Board</dt><dd className="font-semibold">{board ?? "—"}</dd></div>
               <div><dt className="text-xs text-slate-500">RouterOS</dt><dd className="font-semibold">{version ?? "—"}</dd></div>
               <div><dt className="text-xs text-slate-500">Interfaces</dt><dd className="font-semibold">{ifaces.length}</dd></div>
               <div><dt className="text-xs text-slate-500">Bridges</dt><dd className="font-semibold">{bridges.length}</dd></div>
             </dl>
+            {/* The names, not just the count. A count of 1 on a five-port board
+                is the kind of wrong that is obvious only if you can see what was
+                actually reported, and this is the only place it is visible. */}
+            {ifaces.length > 0 && (
+              <p className="hint">
+                Ports found:{" "}
+                <span className="font-mono">{ifaces.map((i) => i.name).join(", ")}</span>
+              </p>
+            )}
+            </>
           )}
           {caps?.wireguard && !caps.wireguard.supported && (
             <p className="hint text-amber-700">{caps.wireguard.reason}</p>
@@ -262,30 +302,46 @@ export default function MikroTikSetupWizard({
                 </label>
               ))}
             </div>
-            <p className="hint">A port already in a bridge cannot be the WAN.</p>
+            <p className="hint">
+              A port already in a bridge cannot be the WAN.
+              {eth.length === 0 && " No free ethernet port was reported."}
+            </p>
           </fieldset>
 
           {(mode === "HOTSPOT" || mode === "HOTSPOT_PPPOE") && (
             <fieldset className="space-y-2">
               <legend className="label">HotSpot ports</legend>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {eth.filter((i) => i.name !== wan).map((i) => (
+                {pickable.map((i) => (
                   <button key={i.name} type="button"
                     onClick={() => toggle(hsPorts, i.name, setHsPorts)}
+                    aria-pressed={hsPorts.includes(i.name)}
                     className={`min-h-[44px] rounded-lg border px-3 text-left text-sm ${hsPorts.includes(i.name) ? "border-emerald-600 bg-emerald-50" : "border-slate-300"}`}>
                     <span className="font-mono font-semibold">{i.name}</span>
+                    <span className="ml-1 text-[10px] uppercase text-slate-500">
+                      {i.type === "wireless" ? "wifi" : "lan"}
+                    </span>
                     {i.in_bridge && <span className="block text-[10px] text-amber-700">currently in {i.in_bridge}</span>}
                   </button>
                 ))}
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <input className="input" placeholder="HotSpot subnet 10.5.50.0/24" value={hsSubnet}
-                  onChange={(e) => setHsSubnet(e.target.value)} />
-                <input className="input" placeholder="Pool range 10.5.50.10-10.5.50.250" value={hsRange}
-                  onChange={(e) => setHsRange(e.target.value)} />
-                <input className="input" placeholder="Login DNS login.isp.net" value={hsDns}
-                  onChange={(e) => setHsDns(e.target.value)} />
-              </div>
+              {/* Subnet, range and DNS are prefilled and hidden by default: the
+                  operator came here to pick ports, not to type addresses. They
+                  stay reachable because an ISP with an existing numbering plan
+                  genuinely needs to change them. */}
+              {showAdvanced && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="HotSpot subnet" placeholder="HotSpot subnet" value={hsSubnet}
+                    onChange={(e) => setHsSubnet(e.target.value)} />
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="HotSpot pool range" placeholder="Pool range" value={hsRange}
+                    onChange={(e) => setHsRange(e.target.value)} />
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="Login DNS name" placeholder="Login DNS" value={hsDns}
+                    onChange={(e) => setHsDns(e.target.value)} />
+                </div>
+              )}
             </fieldset>
           )}
 
@@ -296,26 +352,40 @@ export default function MikroTikSetupWizard({
                 {eth.filter((i) => i.name !== wan && !hsPorts.includes(i.name)).map((i) => (
                   <button key={i.name} type="button"
                     onClick={() => toggle(pppPorts, i.name, setPppPorts)}
+                    aria-pressed={pppPorts.includes(i.name)}
                     className={`min-h-[44px] rounded-lg border px-3 text-left text-sm ${pppPorts.includes(i.name) ? "border-emerald-600 bg-emerald-50" : "border-slate-300"}`}>
                     <span className="font-mono font-semibold">{i.name}</span>
                   </button>
                 ))}
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <input className="input" placeholder="Pool name pool-pppoe" value={pppoePool}
-                  onChange={(e) => setPppoePool(e.target.value)} />
-                <input className="input" placeholder="Range 100.64.10.2-100.64.10.250" value={pppoeRanges}
-                  onChange={(e) => setPppoeRanges(e.target.value)} />
-                <input className="input" placeholder="Local address 100.64.10.1" value={pppoeLocal}
-                  onChange={(e) => setPppoeLocal(e.target.value)} />
-              </div>
+              {showAdvanced && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="PPPoE pool name" placeholder="Pool name" value={pppoePool}
+                    onChange={(e) => setPppePool(e.target.value)} />
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="PPPoE range" placeholder="Range" value={pppoeRanges}
+                    onChange={(e) => setPppoeRanges(e.target.value)} />
+                  <input className="input" autoComplete="off" spellCheck={false}
+                    aria-label="PPPoE local address" placeholder="Local address" value={pppoeLocal}
+                    onChange={(e) => setPppoeLocal(e.target.value)} />
+                </div>
+              )}
             </fieldset>
           )}
 
           <div>
+            <button type="button" className="btn-ghost w-full sm:w-auto"
+              aria-expanded={showAdvanced}
+              onClick={() => setShowAdvanced((v) => !v)}>
+              {showAdvanced ? "Hide addressing" : "Change addressing (subnet, range, DNS)"}
+            </button>
+          </div>
+
+          <div>
             <label className="label" htmlFor="np-secret">RADIUS shared secret (optional)</label>
-            <input id="np-secret" type="password" className="input" value={secret}
-              onChange={(e) => setSecret(e.target.value)}
+            <input id="np-secret" type="password" className="input" autoComplete="new-password"
+              value={secret} onChange={(e) => setSecret(e.target.value)}
               placeholder="blank = use the secret already stored for this router" />
             <p className="hint">Never stored here. Used to build the script, then discarded.</p>
           </div>
