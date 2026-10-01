@@ -90,16 +90,28 @@ on demand, so all runtime reads happen against live env vars, never at build tim
 
 #### M-Pesa (direct Safaricom Daraja)
 
-Daraja credentials are **per ISP, not environment variables**. Each ISP pastes its own consumer
-key / consumer secret / passkey / shortcode at `/dashboard/settings/mpesa`, which stores them as an
-AES-256-GCM envelope in `payment_provider_credentials` (RLS enabled, no policies → readable only by
-the service role). Nothing else is needed on Vercel beyond optional `DARAJA_CALLBACK_URL`.
+Daraja credentials are **one platform app, not per-ISP and not environment variables**. A Super Admin
+enters NETPID's consumer key / consumer secret / passkey / environment once at `/admin/payments`,
+which stores them as an AES-256-GCM envelope against the `payment_providers` row whose `isp_id IS NULL`
+(RLS enabled, no policies on `payment_provider_credentials` → readable only by the service role).
+An ISP declares **only** the Till/PayBill they own at `/dashboard/settings/mpesa` — no credentials,
+no Safaricom account, nothing to apply for.
+
+Each STK push authenticates as the platform and names that ISP's Till as the receiver
+(`BusinessShortCode` and `PartyB`), so customer money lands in the ISP's own account and never passes
+through NETPID. `lib/daraja.ts` composes the two halves in `getDarajaCreds()`.
+
+**Operational requirement:** Safaricom must have every ISP's Till registered as a Receiver on the
+platform app. An unregistered Till is rejected at push time and the customer sees the failure, so
+onboarding a new ISP includes adding their Till to the app.
 
 - STK push: `POST /api/payments/stk` creates a `pending` payment and never activates service.
 - Callback: `POST /api/payments/daraja-callback` activates **only** on `ResultCode === 0` with a
   matching `CheckoutRequestID` and an amount equal to the stored row.
-- Manual fallback: `POST /api/payments/manual` records a Till/PayBill receipt the operator already
-  saw on their handset; unique on `mpesa_receipt`, so a receipt can never be banked twice.
+- Captive portal: STK only. There is no manual receipt path on the public portal; the number the
+  customer needs is inside the M-Pesa prompt. `POST /api/payments/manual` still exists for the
+  **staff dashboard** (an operator recording a payment they saw on their own handset); unique on
+  `mpesa_receipt`, so a receipt can never be banked twice.
 
 Only `apps/web` belongs on Vercel: `network-worker` needs a long-running host (VPS with systemd,
 Fly, Render) and `freeradius/` runs on your own server — see Quick start step 5.
