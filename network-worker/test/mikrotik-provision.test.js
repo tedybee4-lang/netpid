@@ -668,6 +668,36 @@ test("both version-specific paths are asserted, not discovered in the field", ()
   assert.match(GEN_V6, /\/ip radius add service/, "v6 uses /ip radius");
 });
 
+test("the RADIUS port properties are the long names", () => {
+  // Field report: bad parameter auth-port (line 2 column 102)
+  //
+  // The properties are authentication-port and accounting-port. auth-port and
+  // acct-port do not exist, so the entire /radius line is rejected, no RADIUS
+  // client is ever created, and PPPoE then authenticates against nothing: every
+  // subscriber looks like a bad password and the failure is invisible.
+  //
+  // The sibling generator in this repo has used the long names all along and
+  // its own test asserts them. The wizard's copy had drifted to the short names
+  // and nothing compared the two.
+  assert.match(GEN, /authentication-port=1812/);
+  assert.match(GEN, /accounting-port=1813/);
+  assert.doesNotMatch(GEN, /\bauth-port=/, "auth-port does not exist in either version");
+  assert.doesNotMatch(GEN, /\bacct-port=/, "acct-port does not exist in either version");
+  assert.match(GEN_V6, /authentication-port=/, "v6 uses the same long property names");
+});
+
+test("the HotSpot pool holds the range only, never the subnet it sits in", () => {
+  // Field report: failure: pool has overlapping ranges
+  //
+  // The pool was built as "<subnet>,<range>", and the range is carved out of
+  // that subnet, so the two overlap and the router refuses the whole pool. The
+  // portal then has no pool at all and every client is handed an empty range,
+  // which looks like a DHCP fault rather than a configuration error.
+  assert.match(GEN, /\/ip pool add name="10\.5\.50\.10-10\.5\.50\.250" ranges="10\.5\.50\.10-10\.5\.50\.250"/,
+    "the pool ranges must be the dynamic range alone");
+  assert.doesNotMatch(GEN, /ranges="10\.5\.50\.0\/24,/, "never put the subnet in the same pool as a range inside it");
+});
+
 test("every mode demands its own ports", () => {
   const hs = validateSelection({ mode: "HOTSPOT", wan_interface: "ether1", hotspot_interfaces: [] }, DETECTED);
   assert.ok(hs.errors.some((e) => /HotSpot mode needs at least one/.test(e)));

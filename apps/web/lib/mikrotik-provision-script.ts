@@ -393,7 +393,12 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       c("1-based and a 0 index silently yields nothing, which would hand every");
       c("client an empty pool and look like a DHCP fault.");
       p(`:if ([:len [/ip pool find name=${q(o.hotspotRange)}]] = 0) do={`);
-      p(`  /ip pool add name=${q(o.hotspotRange)} ranges=${q(`${o.hotspotSubnet},${o.hotspotRange}`)} comment=${q(`${tag} hs-pool`)}`);
+      // The pool holds the DYNAMIC RANGE ONLY. It used to be
+      // "<subnet>,<range>", which is a subset of the subnet and the router
+      // rejected it with "pool has overlapping ranges" - the whole portal
+      // failed to be created. The subnet is the network; the range is carved
+      // out of it. Putting both in one pool says the same address twice.
+      p(`  /ip pool add name=${q(o.hotspotRange)} ranges=${q(o.hotspotRange)} comment=${q(`${tag} hs-pool`)}`);
       p("}");
       p("");
       p(`:if ([:len [/ip hotspot find name=netpid]] = 0) do={`);
@@ -465,10 +470,17 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   c("subscriber looks idle and the bill is quietly wrong rather than broken.");
   if (o.radiusSecret) {
     p(`:if ([:len [${RM} find comment=${q(`NETPID:${o.nasShortname}`)}]] = 0) do={`);
-    p(`  ${RM} add service=ppp,hotspot address=${q(o.radiusServer)} secret=${q(o.radiusSecret)} auth-port=${o.radiusAuthPort} acct-port=${o.radiusAcctPort} timeout=1500ms comment=${q(`NETPID:${o.nasShortname}`)}`);
+    // The port properties are authentication-port and accounting-port.
+    // auth-port and acct-port do not exist, so the whole line is rejected and
+    // the RADIUS client is never created - PPPoE then authenticates against
+    // nothing and every subscriber looks like a bad password. The sibling
+    // generator in this repo (routeros.mjs) has used the long names all along
+    // and its test asserts them; the wizard's copy had drifted to the short
+    // names and nothing caught the divergence.
+    p(`  ${RM} add service=ppp,hotspot address=${q(o.radiusServer)} secret=${q(o.radiusSecret)} authentication-port=${o.radiusAuthPort} accounting-port=${o.radiusAcctPort} timeout=1500ms comment=${q(`NETPID:${o.nasShortname}`)}`);
     p(`  :put "RADIUS entry created."`);
     p("} else={");
-    p(`  ${RM} set [find comment=${q(`NETPID:${o.nasShortname}`)}] secret=${q(o.radiusSecret)} auth-port=${o.radiusAuthPort} acct-port=${o.radiusAcctPort}`);
+    p(`  ${RM} set [find comment=${q(`NETPID:${o.nasShortname}`)}] secret=${q(o.radiusSecret)} authentication-port=${o.radiusAuthPort} accounting-port=${o.radiusAcctPort}`);
     p(`  :put "RADIUS entry updated."`);
     p("}");
   } else {
