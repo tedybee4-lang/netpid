@@ -2,16 +2,12 @@
  * NETPID MikroTik installer - TypeScript port of network-worker/src/installer.mjs
  *
  * The worker twin is the copy the test suite exercises; this is the copy the web
- * app serves from Quick Add. They must produce byte-identical .rsc output.
- * network-worker/test/installer.test.js imports BOTH and diffs the result, so a
- * change to one that is not made to the other fails the build rather than
- * quietly serving a different router configuration to the two paths.
- *
- * Generated from installer.mjs; edit that file and re-run the parity check.
+ * app serves from Quick Add. network-worker/test/installer.test.js imports BOTH
+ * and diffs the generated .rsc, so a change to one that is not made to the other
+ * fails the build rather than quietly serving a different router.
  */
+export interface BuildOptions { strict?: boolean }
 
-/** Everything the operator must supply or choose. Empty means "not decided",
- *  which the script's preflight reports rather than inventing. */
 export interface InstallerOptions {
   mode: "NEW" | "EXISTING";
   identity: string;
@@ -36,7 +32,9 @@ export interface InstallerOptions {
   radiusAuthPort: number;
   radiusAcctPort: number;
   radiusCoaPort: number;
+  radiusSrcAddress: string;
   nasShortname: string;
+  wgEnabled: boolean;
   wgIface: string;
   wgListenPort: number;
   wgServerPublicKey: string;
@@ -134,7 +132,9 @@ export function installerDefaults(): InstallerOptions {
     radiusAuthPort: 1812,
     radiusAcctPort: 1813,
     radiusCoaPort: 3799,
+    radiusSrcAddress: "",
     nasShortname: "",
+    wgEnabled: true,
     wgIface: "netpid-wg",
     wgListenPort: 51820,
     wgServerPublicKey: "",
@@ -178,14 +178,52 @@ export function installerMissing(o: Partial<InstallerOptions> = {}): string[] {
     if (!String(c.hotspotDnsName).trim()) need.push("HotSpot DNS name");
   }
   if (c.pppoeEnabled && !String(c.pppoePool).trim()) need.push("PPPoE pool name");
+  // RADIUS is the whole authentication and billing path. Without a secret the
+  // installer skips /radius entirely, which is a half-configured router.
+  if (!String(c.radiusSecret).trim()) need.push("RADIUS shared secret (operator supplied)");
+  // Ports must be real numbers, not merely present.
+  for (const [k, label] of Object.entries<string>({
+    radiusAuthPort: "RADIUS authentication port",
+    radiusAcctPort: "RADIUS accounting port",
+    radiusCoaPort: "CoA port",
+    wgListenPort: "WireGuard listen port",
+  })) {
+    const v = Number((c as Record<string, unknown>)[k]);
+    if (!Number.isInteger(v) || v < 1 || v > 65535) need.push(label);
+  }
+  // Management enrolment is intended, so the NETPID half must be real. A
+  // fabricated server key yields a tunnel that never handshakes.
+  if (c.wgEnabled !== false) {
+    if (!isWgKey(c.wgServerPublicKey)) need.push("WireGuard server public key (a real 43-byte base64 key)");
+    if (!isIp(c.wgRouterTunnelIp)) need.push("WireGuard router tunnel address");
+    if (!isIp(c.wgServerTunnelIp)) need.push("WireGuard server tunnel address");
+  }
   return need;
 }
 
 /** Build the single authoritative .rsc installer. A structurally invalid
  *  option throws here; a merely INCOMPLETE config is rendered into the script's
  *  own preflight so the operator sees it on the router, not in a server log. */
-export function buildRouterosInstaller(input: Partial<InstallerOptions> = {}): string {
+export function buildRouterosInstaller(
+  input: Partial<InstallerOptions> = {}, opts: BuildOptions = {},
+): string {
   const o: InstallerOptions = { ...installerDefaults(), ...input };
+  // strict is the default. Emitting a script that silently skips RADIUS, or
+  // installs a WireGuard interface with no peer, is precisely the half-built
+  // router this installer exists to prevent. A caller that genuinely wants a
+  // partial script must ask for it and get it flagged as partial.
+  if (opts.strict !== false) {
+    const missing = installerMissing(o);
+    if (missing.length) {
+      throw new Error(
+        "NETPID installer: refusing to generate a complete .rsc, "
+        + `${missing.length} required value(s) are missing:\n`
+        + missing.map((m) => `  - ${m}`).join("\n")
+        + "\nNothing was invented. Supply these, or pass { strict: false } "
+        + "to deliberately generate a partial script.",
+      );
+    }
+  }
   const L: string[] = [];
   const put = (s: string = ""): void => { L.push(s); };
   const c = (s: string): void => { put(`# ${s}`); };
@@ -285,6 +323,9 @@ function sectionARest(
   put(`:global NP_RADIUS_AUTH      ${q(o.radiusAuthPort)}`);
   put(`:global NP_RADIUS_ACCT      ${q(o.radiusAcctPort)}`);
   put(`:global NP_RADIUS_COA       ${q(o.radiusCoaPort)}`);
+  c("Source address the router authenticates FROM. Pinning it keeps accounting");
+  c("attributed to this NAS instead of whatever the WAN address happens to be.");
+  put(`:global NP_RADIUS_SRC       ${q(o.radiusSrcAddress)}`);
   c("NAS identity. FreeRADIUS matches the secret to this shortname, so it must");
   c("equal the NAS shortname NETPID created for this router.");
   put(`:global NP_NAS              ${q(o.nasShortname)}`);
@@ -295,7 +336,7 @@ function sectionARest(
   c("means a tunnel that silently never handshakes.");
   c("The router's OWN key is generated on the router, in Section J. Only the");
   c("public half is pasted back to NETPID; the private half never leaves it.");
-  put(":global NP_WG_ON            \"yes\"");
+  put(`:global NP_WG_ON            ${q(o.wgEnabled === false ? "no" : "yes")}`);
   put(`:global NP_WG_IFACE         ${q(o.wgIface)}`);
   put(`:global NP_WG_LISTEN        ${q(o.wgListenPort)}`);
   put(":global NP_WG_SERVER_PUB    \"\"");
@@ -316,6 +357,11 @@ function sectionARest(
   put(`:global NP_API_USER         ${q(o.apiUser)}`);
   put(":global NP_API_PASSWORD     \"\"");
   put(":global NP_API_GEN          \"yes\"");
+  put("");
+  c("Post-install router backup, written to the router's own filesystem. It is");
+  c("NOT uploaded anywhere by this script; NETPID fetches it over the API once");
+  c("management works. Set to \"no\" on a router with a small flash filesystem.");
+  put(":global NP_BACKUP_ON         \"yes\"");
   put("");
   put(`:global NP_TIMEZONE         ${q(o.timezone)}`);
   put(`:global NP_COUNTRY          ${q(o.country)}`);
@@ -339,7 +385,10 @@ function sectionARest(
 
 
 // ------------------------------------------------------------------ PREFLIGHT
-function emitPreflight(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitPreflight(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION B - PREFLIGHT");
   rule();
@@ -397,7 +446,10 @@ function emitPreflight(L: string[], c: (s: string) => void, rule: () => void, pu
 
 
 // ------------------------------------------------------------- IDENTITY + LAN
-function emitIdentityAndLan(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitIdentityAndLan(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION C - IDENTITY, BRIDGE, LAN");
   rule();
@@ -478,7 +530,10 @@ function emitIdentityAndLan(L: string[], c: (s: string) => void, rule: () => voi
 
 
 // --------------------------------------------------------------- DHCP AND DNS
-function emitDhcpAndDns(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitDhcpAndDns(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION D - ADDRESS POOLS, DHCP, DNS");
   rule();
@@ -557,7 +612,10 @@ function emitDhcpAndDns(L: string[], c: (s: string) => void, rule: () => void, p
 
 
 // ----------------------------------------------------------------- WAN + NAT
-function emitWanAndNat(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitWanAndNat(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION E - WAN AND NAT");
   rule();
@@ -613,7 +671,10 @@ function emitWanAndNat(L: string[], c: (s: string) => void, rule: () => void, pu
 
 
 // ----------------------------------------------------------------- FIREWALL
-function emitFirewall(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitFirewall(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION F - FIREWALL");
   rule();
@@ -698,7 +759,10 @@ function emitFirewall(L: string[], c: (s: string) => void, rule: () => void, put
 
 
 // ------------------------------------------------------------------- RADIUS
-function emitRadius(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitRadius(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION G - RADIUS (auth, accounting, CoA)");
   rule();
@@ -709,24 +773,30 @@ function emitRadius(L: string[], c: (s: string) => void, rule: () => void, put: 
   c("");
   c("The comment must match what NETPID looks for when it reconciles the NAS at");
   c("runtime, or the worker creates a second server entry beside this one.");
+  c("src-address pins the source the router authenticates FROM. FreeRADIUS keys");
+  c("accounting on the NAS it was configured with, so an unpinned source can be");
+  c("attributed to the wrong NAS and the session refused for authorisation.");
+  put(":local npRComment (\"NETPID:\" . $NP_NAS)");
+  put(":local npRAcct \"\"");
+  put(":if ([:len $NP_RADIUS_SRC] > 0) do={ :set npRAcct (\" src-address=\" . $NP_RADIUS_SRC) }");
   put(":if ([:len $NP_RADIUS_SECRET] > 0) do={");
-  put("  :local npRComment (\"NETPID:\" . $NP_NAS)");
   put("  :if ([:len [/radius find comment=$npRComment]] = 0) do={");
   put("    :if ([:len [/radius find address=$NP_RADIUS_SERVER]] > 0) do={");
   put("      /radius set [find address=$NP_RADIUS_SERVER] service=ppp,hotspot secret=$NP_RADIUS_SECRET auth-port=$NP_RADIUS_AUTH acct-port=$NP_RADIUS_ACCT timeout=1500ms comment=$npRComment");
   put("      :put (\"radius entry updated: \" . $NP_RADIUS_SERVER)");
-  c("    } else={");
-  put("      /radius add service=ppp,hotspot address=$NP_RADIUS_SERVER secret=$NP_RADIUS_SECRET auth-port=$NP_RADIUS_AUTH acct-port=$NP_RADIUS_ACCT timeout=1500ms comment=$npRComment");
+  put("    } else={");
+  put("      /radius add service=ppp,hotspot address=$NP_RADIUS_SERVER secret=$NP_RADIUS_SECRET auth-port=$NP_RADIUS_AUTH acct-port=$NP_RADIUS_ACCT timeout=1500ms comment=$npRComment $npRAcct");
   put("      :put (\"radius entry created: \" . $NP_RADIUS_SERVER)");
   put("    }");
-  c("  } else={");
+  put("  } else={");
   put("    /radius set [find comment=$npRComment] service=ppp,hotspot secret=$NP_RADIUS_SECRET auth-port=$NP_RADIUS_AUTH acct-port=$NP_RADIUS_ACCT timeout=1500ms");
   put("    :put \"radius entry refreshed\"");
   put("  }");
-  put("  :set npRComment \"\"");
-  c("} else={");
-  put("  :put \"SKIP /radius: NP_RADIUS_SECRET is blank.\"");
+  put("} else={");
+  put("  :put \"SKIP /radius: NP_RADIUS_SECRET is blank. No authentication is configured.\"");
   put("}");
+  put(":set npRComment \"\"");
+  put(":set npRAcct \"\"");
   put("");
   c("PPP global AAA. Accounting is the part that matters for billing: without");
   c("it NETPID receives no usage data and every subscriber looks idle.");
@@ -743,7 +813,10 @@ function emitRadius(L: string[], c: (s: string) => void, rule: () => void, put: 
 }
 
 // ------------------------------------------------------------------ HOTSPOT
-function emitHotspot(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitHotspot(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION H - HOTSPOT");
   rule();
@@ -794,7 +867,10 @@ function emitHotspot(L: string[], c: (s: string) => void, rule: () => void, put:
 
 
 // -------------------------------------------------------------------- PPPOE
-function emitPppoe(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitPppoe(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION I - PPPoE SERVER");
   rule();
@@ -837,7 +913,10 @@ function emitPppoe(L: string[], c: (s: string) => void, rule: () => void, put: (
 
 
 // ---------------------------------------------------------------- WIREGUARD
-function emitWireguard(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitWireguard(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION J - WIREGUARD / NETPID MANAGEMENT");
   rule();
@@ -891,13 +970,11 @@ function emitWireguard(L: string[], c: (s: string) => void, rule: () => void, pu
   put("    }");
   put("    :set npAllowed \"\"");
   put("    :put \"WireGuard peer configured toward NETPID.\"");
-  put("    :if ([:len $NP_WG_SERVER_IP] > 0) do={");
-  put("      :if ([:len $NP_WG_ROUTER_IP] > 0) do={");
-  put("        :if ([:len [/ip route find where dst-address=$NP_WG_SERVER_IP]] = 0) do={");
-  put("          /ip route add dst-address=$NP_WG_SERVER_IP/32 gateway=$NP_WG_ROUTER_IP comment=\"$NP_TAG wg-route\"");
-  put("        }");
-  put("      }");
-  put("    }");
+  c("    NO explicit route to the VPS is added here, deliberately. The peer's");
+  c("    allowed-address already installs exactly that route in the kernel, and");
+  c("    a hand-written route 'via the router's own tunnel address' points at");
+  c("    itself: it black-holes the management path and makes the tunnel look");
+  c("    up while NETPID still cannot reach the router through it.");
   put("  }");
   put("}");
   put("");
@@ -905,7 +982,10 @@ function emitWireguard(L: string[], c: (s: string) => void, rule: () => void, pu
 
 
 // --------------------------------------------------------------- API + USER
-function emitApi(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitApi(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION K - ROUTEROS API (management surface)");
   rule();
@@ -925,9 +1005,13 @@ function emitApi(L: string[], c: (s: string) => void, rule: () => void, put: (s?
   put("    :put (\"API source allowlist: \" . $NP_MGMT_NET)");
   put("  }");
   c("} else={");
-  put("  :put \"WARNING: NP_MGMT_NET and NP_WG_ROUTER_IP are both empty, so the API\"");
-  put("  :put \"         CANNOT be restricted and is NOT enabled by this installer.\"");
-  put("  :put \"         Set one of them to let NETPID manage this router.\"");
+  put("  :put \"================ NETPID STATE: API WAITING FOR ENROLLMENT ================\"");
+  put("  :put \"NP_MGMT_NET and NP_WG_ROUTER_IP are both empty, so the RouterOS API\"");
+  put("  :put \"CANNOT be restricted to a management source and is NOT enabled here.\"");
+  put("  :put \"Enabling it unbound would expose 8728/8729 to the internet, so it\"");
+  put("  :put \"is deliberately left off until an operator supplies a management\"");
+  put("  :put \"network. Re-run with NP_MGMT_NET set to finish provisioning.\"");
+  put("  :put \"------------------------------------------------------------------------\"");
   put("}");
   put("");
   c("api-ssl first. The worker speaks it when use_ssl=yes, and it is the only");
@@ -936,7 +1020,10 @@ function emitApi(L: string[], c: (s: string) => void, rule: () => void, put: (s?
   put("  :if ([:len [:trim $NP_MGMT_NET]] > 0) do={");
   put("    :if ([:len [/certificate find name=NETPID]] = 0) do={");
   put("      :certificate add name=NETPID common-name=$NP_IDENTITY days-valid=3650");
-  put("      :certificate sign NETPID");
+  c("      RouterOS 7 resolves a certificate NAME for /certificate sign, but a");
+  c("      bare token is read as an internal id and matches nothing. Selecting");
+  c("      with [find name=...] is unambiguous on both 6.x and 7.x.");
+  put("      :certificate sign [find name=NETPID]");
   put("    }");
   put("    /ip service set api-ssl disabled=no port=$NP_APISSL_PORT address-list=NETPID-MGMT certificate=NETPID");
   put("  }");
@@ -958,12 +1045,17 @@ function emitApi(L: string[], c: (s: string) => void, rule: () => void, put: (s?
   put("      :if ($NP_API_GEN = \"yes\") do={");
   put("        :local npChars \"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789\"");
   put("        :local npPw \"\"");
+  put("        :local npLen [:len $npChars]");
+  c("        [:pick] and [:rndnum] are 1-based and INCLUSIVE, so the range is");
+  c("        1..57. A range starting at 0 makes [:pick $npChars 0] fail, and that");
+  c("        error aborts the script with no user created and no message.");
   put("        :for i from=1 to=24 do={");
-  put("          :set npPw ($npPw . [:pick $npChars [:rndnum from=0 to=57]])");
+  put("          :set npPw ($npPw . [:pick $npChars [:rndnum from=1 to=$npLen]])");
   put("        }");
   put("        :set NP_API_PASSWORD $npPw");
   put("        :set npPw \"\"");
   put("        :set npChars \"\"");
+  put("        :set npLen \"\"");
   put("      }");
   put("    }");
   put("    :if ([:len $NP_API_PASSWORD] > 0) do={");
@@ -987,7 +1079,10 @@ function emitApi(L: string[], c: (s: string) => void, rule: () => void, put: (s?
 
 
 // ------------------------------------------------------------------- REPORT
-function emitReport(L: string[], c: (s: string) => void, rule: () => void, put: (s?: string) => void, o: InstallerOptions): void {
+function emitReport(
+  L: string[], c: (s: string) => void, rule: () => void,
+  put: (s?: string) => void, o: InstallerOptions,
+): void {
   rule();
   c("SECTION L - NETPID INSTALLATION REPORT");
   rule();
@@ -1074,24 +1169,57 @@ function emitReport(L: string[], c: (s: string) => void, rule: () => void, put: 
   put("}");
   put("");
   c("NETPID management status, stated as the separate claims they are.");
-  put(":if ([:len [/interface wireguard find name=$NP_WG_IFACE]] > 0) do={");
-  put("  :if ([:len [:trim $NP_WG_SERVER_PUB]] > 0) do={");
-  put("    :put \"NETPID MANAGEMENT   : peer installed; awaiting a real handshake\"");
-  c("  } else={");
-  put("    :put \"NETPID MANAGEMENT   : awaiting WireGuard enrolment (no server key)\"");
+  put(":if ([:len [/interface wireguard find name=$NP_WG_IFACE]] = 0) do={");
+  put("  :put \"ENROLLMENT STATE        : WIREGUARD ENROLLMENT REQUIRED\"");
+  put("} else={");
+  put("  :if ([:len [:trim $NP_WG_SERVER_PUB]] = 0) do={");
+  put("    :put \"ENROLLMENT STATE        : WIREGUARD ENROLLMENT REQUIRED\"");
+  put("    :put \"ENROLLMENT STATE        : interface exists, no NETPID peer key yet\"");
+  put("  } else={");
+  put("    :if ([:len [/interface wireguard peers find interface=$NP_WG_IFACE]] = 0) do={");
+  put("      :put \"ENROLLMENT STATE        : PROVISIONED - peer awaiting install\"");
+  put("    } else={");
+  put("      :put \"ENROLLMENT STATE        : CONNECTED only if a handshake exists\"");
+  put("      :if ([:len [/interface wireguard peers find interface=$NP_WG_IFACE last-handshake-time]] > 0) do={");
+  put("        :put \"ENROLLMENT STATE        : CONNECTED (handshake seen)\"");
+  put("      }");
+  put("    }");
   put("  }");
-  c("} else={");
-  put("  :put \"NETPID MANAGEMENT   : not installed\"");
   put("}");
+  put(":if ([:len [:trim $NP_MGMT_NET]] = 0) do={");
+  put("  :put \"API STATE                : API WAITING FOR ENROLLMENT\"");
+  put("} else={");
+  put("  :put \"API STATE                : PROVISIONED - reachability is NETPID to test\"");
+  put("}");
+  put("");
+  c("Post-install backup. /system/backup/save is safe: it writes to the routers");
+  c("own filesystem and touches nothing else. Nothing is uploaded by this");
+  c("script; NETPID fetches backups over the API when it has management.");
+  put(":if ($NP_BACKUP_ON = \"yes\") do={");
+  put("  :do {");
+  put("    /system/backup/save name=netpid-post-install password=$NP_API_PASSWORD");
+  put("    :put \"backup: saved as netpid-post-install\"");
+  put("  } on-error={ :put \"backup: skipped (no space, or unsupported here)\" }");
+  put("} else={ :put \"backup: skipped (NP_BACKUP_ON=no)\" }");
   put("");
   put(":put (\"ping \" . $NP_RADIUS_SERVER . \" -> \" . [:ping $NP_RADIUS_SERVER count=3] . \" packet loss\")");
   put(":put \"\"");
   rule();
-  c("NETPID STATUS - PROVEN vs NOT PROVEN");
+  c("NETPID STATE MODEL - four different claims, not one");
   rule();
+  c("  PROVISIONED = configuration was written to this router. This script can");
+  c("                prove this and nothing more.");
+  c("  CONNECTED   = NETPID management transport is actually reachable. Needs a");
+  c("                real WireGuard handshake. NOT provable from here.");
+  c("  VERIFIED    = NETPID successfully tested the service (RADIUS auth,");
+  c("                accounting, CoA). NETPID does this; this script cannot.");
+  c("  ONLINE      = every required health check passed. Only a NETPID worker");
+  c("                health check can set this.");
+  c("");
   c("  RADIUS CONFIGURED ......... see report above");
   c("  RADIUS REACHABLE .......... NOT PROVEN by this script");
   c("  RADIUS ACCOUNTING ......... see /ppp/aaa above");
+  c("  COA CONFIGURED ............ see /radius incoming above");
   c("  WIREGUARD CONFIGURED ...... see report above");
   c("  WIREGUARD CONNECTED ....... needs a real handshake");
   c("  ROUTEROS API REACHABLE .... needs NETPID to connect over the tunnel");

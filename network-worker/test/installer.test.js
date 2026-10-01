@@ -22,7 +22,14 @@ const FULL = {
   hotspotDnsName: "login.gene.net",
   pppoePool: "pool-pppoe",
   radiusServer: "10.90.0.1",
+  // Supplied by the operator at run time, never committed. The generator takes
+  // it as an input precisely so the value never lives in source control.
+  radiusSecret: "operator-supplied-secret",
   nasShortname: "netpid-GENE",
+  wgServerPublicKey: "iHtSz+Y0QLqLS+KxUqoTUn45AvMEvUe9NXGMAcK6QmY=",
+  wgRouterTunnelIp: "10.90.0.2",
+  wgServerTunnelIp: "10.90.0.1",
+  mgmtNetwork: "10.90.0.0/30",
 };
 const S = buildRouterosInstaller(FULL);
 
@@ -115,7 +122,8 @@ test("the RouterOS API is bound to a management source list, never open", () => 
   assert.match(S, /\/ip firewall address-list add list=NETPID-MGMT/);
   // If there is no management network at all, the API must not be enabled
   // rather than enabled for the world.
-  assert.match(S, /CANNOT be restricted and is NOT enabled/);
+  assert.match(S, /API WAITING FOR ENROLLMENT/);
+  assert.match(S, /CANNOT be restricted to a management source/);
 });
 
 test("the firewall is added to, never flushed", () => {
@@ -319,12 +327,179 @@ test("the web port and the worker twin produce identical output", async () => {
 
 test("the web port also refuses to invent a network or a key", async () => {
   const web = await import(pathToFileURL(join(process.cwd(), "..", "apps", "web", "lib", "routeros-installer.ts")).href);
-  const s = web.buildRouterosInstaller({ identity: "GENE" });
+  // Deliberately partial: strict:false is the only way to get a script that is
+  // missing required values, which is what this test inspects.
+  const s = web.buildRouterosInstaller({ identity: "GENE" }, { strict: false });
   assert.doesNotMatch(s, /10\.10\.10\./);
   assert.match(s, /:global NP_RADIUS_SECRET    ""/);
   assert.match(s, /:global NP_WG_SERVER_PUB    ""/);
   assert.doesNotMatch(s, /NP_WG_SERVER_PUB\s+"[A-Za-z0-9+/]{43}="/);
 });
 
+// ---------------------------------------------------------------------------
+// Completeness. Each of these proves one provisioning section is present, so a
+// future edit that drops a section fails here rather than on a live router.
+// ---------------------------------------------------------------------------
 
+test("the installer refuses to generate a complete script with missing input", () => {
+  // The whole point of the task: a half-configured .rsc must not be emittable.
+  assert.throws(() => buildRouterosInstaller({}), /refusing to generate a complete/);
+  assert.throws(() => buildRouterosInstaller({ ...FULL, radiusSecret: "" }), /RADIUS shared secret/);
+  assert.throws(() => buildRouterosInstaller({ ...FULL, identity: "" }), /router identity/);
+  assert.throws(() => buildRouterosInstaller({ ...FULL, nasShortname: "" }), /NAS shortname/);
+  // A partial script is possible, but only when explicitly requested.
+  assert.doesNotThrow(() => buildRouterosInstaller({ identity: "X" }, { strict: false }));
+});
+
+test("every required value is named when input is rejected", () => {
+  const text = installerMissing({}).join(" | ");
+  for (const label of [
+    "router identity", "LAN subnet", "LAN gateway", "DHCP pool",
+    "HotSpot subnet", "HotSpot pool", "HotSpot DNS name", "PPPoE pool",
+    "RADIUS server IP", "RADIUS shared secret", "NAS shortname",
+    "WireGuard server public key", "WireGuard router tunnel address",
+  ]) {
+    assert.ok(text.includes(label), `missing-required-input does not report: ${label}`);
+  }
+});
+
+test("an invalid WireGuard key is rejected, not accepted as a placeholder", () => {
+  for (const bad of ["not-a-key", "", "AAAA"]) {
+    assert.equal(
+      installerMissing({ ...FULL, wgServerPublicKey: bad })
+        .filter((m) => /public key/.test(m)).length, 1,
+      `a bad server key was accepted: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(installerMissing(FULL).length, 0);
+});
+
+test("out-of-range RADIUS and CoA ports are rejected", () => {
+  for (const k of ["radiusAuthPort", "radiusAcctPort", "radiusCoaPort", "wgListenPort"]) {
+    for (const bad of [0, 70000, "x"]) {
+      assert.ok(
+        installerMissing({ ...FULL, [k]: bad }).some((m) => /port/i.test(m)),
+        `${k}=${bad} was accepted`);
+    }
+  }
+});
+
+test("identity, timezone, NTP and DNS are configured", () => {
+  assert.match(S, /\/system identity set name=\$NP_IDENTITY/);
+  assert.match(S, /:global NP_TIMEZONE         "Africa\/Nairobi"/);
+  assert.match(S, /\/system clock set time-zone-name=\$NP_TIMEZONE/);
+  assert.match(S, /\/system ntp client set servers=\$NP_NTP_SERVERS/);
+  assert.match(S, /\/ip dns set servers=\$NP_DNS_SERVERS allow-remote-requests=yes/);
+});
+
+test("WAN is declared, never assumed, and gets a DHCP client", () => {
+  assert.match(S, /:global NP_WAN              "ether1"/);
+  assert.match(S, /\/interface list add name=NETPID-WAN/);
+  assert.match(S, /\/interface list member add list=NETPID-WAN interface=\$NP_WAN/);
+  assert.match(S, /\/interface dhcp-client add interface=\$NP_WAN disabled=no/);
+  // It must warn rather than silently proceed when the interface is absent.
+  assert.match(S, /WARNING: no interface named/);
+});
+
+test("LAN, bridge and DHCP are derived from the declared values", () => {
+  assert.match(S, /\/interface bridge add name=\$NP_LAN_BRIDGE/);
+  assert.match(S, /\/interface bridge port add bridge=\$NP_LAN_BRIDGE interface=\$p/);
+  assert.match(S, /\/ip address add address=\$NP_LAN_NET interface=\$NP_LAN_BRIDGE/);
+  assert.match(S, /\/ip pool add name=\$NP_DHCP_POOL ranges=\$npRange/);
+  assert.match(S, /\/ip dhcp-server add name=\$NP_TAG interface=\$NP_LAN_BRIDGE/);
+  assert.match(S, /\/ip dhcp-server network add address=\$npNet gateway=\$NP_LAN_GATEWAY dns-server=\$NP_DNS_SERVERS/);
+});
+
+test("NAT masquerade is present and idempotent", () => {
+  assert.match(S, /\/ip firewall nat add chain=srcnat action=masquerade out-interface-list=NETPID-WAN/);
+  assert.match(S, /\/ip firewall nat find comment="\$NP_TAG masquerade"\]\] = 0/);
+  assert.match(S, /NAT masquerade already present \(no duplicate created\)/);
+});
+
+
+
+
+
+test("every required firewall rule is present", () => {
+  for (const [what, re] of [
+    ["established/related", /connection-state=established,related comment="\$NP_TAG established"/],
+    ["invalid drop", /action=drop connection-state=invalid comment="\$NP_TAG invalid"/],
+    ["WAN input protection", /chain=input action=drop in-interface-list=NETPID-WAN comment="\$NP_TAG wan-drop"/],
+    ["LAN management", /chain=input action=accept in-interface=\$NP_LAN_BRIDGE comment="\$NP_TAG lan-accept"/],
+    ["ICMP rate limit", /action=accept protocol=icmp limit=20,10 comment="\$NP_TAG icmp"/],
+    ["RADIUS in", /dst-port=\$NP_RADIUS_AUTH,\$NP_RADIUS_ACCT src-address=\$NP_RADIUS_SERVER comment="\$NP_TAG radius-in"/],
+    ["CoA in", /dst-port=\$NP_RADIUS_COA src-address=\$NP_RADIUS_SERVER comment="\$NP_TAG coa-in"/],
+    ["WireGuard in", /dst-port=\$NP_WG_LISTEN in-interface-list=NETPID-WAN comment="\$NP_TAG wg-in"/],
+  ]) {
+    assert.match(S, re, `firewall rule missing: ${what}`);
+  }
+  // WireGuard must be accepted BEFORE the WAN drop or the tunnel never forms.
+  assert.match(S, /comment="\$NP_TAG wg-in"[\s\S]{0,200}place-before=\[find comment="\$NP_TAG wan-drop"\]/,
+    "the WireGuard rule is not placed before the WAN drop");
+});
+
+test("RADIUS source address is configurable and never emitted blank", () => {
+  assert.match(S, /:global NP_RADIUS_SRC       ""/);
+  assert.match(S, /:if \(\[:len \$NP_RADIUS_SRC\] > 0\)/);
+  const withSrc = buildRouterosInstaller({ ...FULL, radiusSrcAddress: "10.90.0.2" });
+  assert.match(withSrc, /set npRAcct \(" src-address=" \. \$NP_RADIUS_SRC\)/);
+  assert.doesNotMatch(S, /src-address=""/);
+});
+
+test("the post-install backup is safe and bounded", () => {
+  assert.match(S, /:global NP_BACKUP_ON         "yes"/);
+  assert.match(S, /\/system\/backup\/save name=netpid-post-install/);
+  assert.match(S, /on-error=/);
+  // The script must not claim an external backup exists.
+  assert.doesNotMatch(S, /scp |sftp |curl |wget /);
+});
+
+test("NEW and EXISTING modes both keep every safety guarantee", () => {
+  const isNew = buildRouterosInstaller({ ...FULL, mode: "NEW" });
+  const isExisting = buildRouterosInstaller({ ...FULL, mode: "EXISTING" });
+  assert.match(isNew, /:global NP_MODE             "NEW"/);
+  assert.match(isExisting, /:global NP_MODE             "EXISTING"/);
+  // NEW takes ownership of the identity; EXISTING leaves a set name alone.
+  assert.match(isNew, /if \(\$NP_MODE = "NEW"\) do=/);
+  assert.match(isExisting, /identity kept/);
+  for (const s of [isNew, isExisting]) {
+    assert.doesNotMatch(s, /\/ip firewall filter remove/);
+    assert.doesNotMatch(s, /\/interface bridge remove/);
+    assert.doesNotMatch(s, /\/ip pool remove/);
+    assert.doesNotMatch(s, /\/ppp profile remove/);
+    assert.doesNotMatch(s, /\/ip address remove \[find\]$/m);
+  }
+});
+
+test("the state model names PROVISIONED, CONNECTED, VERIFIED and ONLINE", () => {
+  assert.match(S, /PROVISIONED = configuration was written to this router/);
+  assert.match(S, /CONNECTED   = NETPID management transport is actually reachable/);
+  assert.match(S, /VERIFIED    = NETPID successfully tested the service/);
+  assert.match(S, /ONLINE      = every required health check passed/);
+  assert.match(S, /ENROLLMENT STATE/);
+  assert.match(S, /WIREGUARD ENROLLMENT REQUIRED/);
+  // A last-handshake check is the only thing allowed to say CONNECTED.
+  assert.match(S, /last-handshake-time/);
+});
+
+test("the password generator uses a valid 1-based index range", () => {
+  // [:pick] and [:rndnum] are 1-based and inclusive. from=0 makes
+  // [:pick $str 0] fail, which aborts the script before the user is created.
+  assert.match(S, /:rndnum from=1 to=\$npLen/);
+  assert.doesNotMatch(S, /:rndnum from=0/);
+  assert.match(S, /:local npLen \[:len \$npChars\]/);
+});
+
+test("the certificate is signed by name, not by a bare token", () => {
+  // A bare token is read as an internal id and matches nothing on RouterOS 7.
+  assert.match(S, /:certificate sign \[find name=NETPID\]/);
+  assert.doesNotMatch(S, /:certificate sign NETPID/);
+});
+
+test("no route is invented pointing the VPS at the router's own address", () => {
+  // gateway=$NP_WG_ROUTER_IP is the router's OWN tunnel IP: such a route points
+  // at itself and black-holes the management path. The peer's allowed-address
+  // installs the correct route in the kernel.
+  assert.doesNotMatch(S, /gateway=\$NP_WG_ROUTER_IP/);
+  assert.match(S, /allowed-address=\$npAllowed/);
+});
 
