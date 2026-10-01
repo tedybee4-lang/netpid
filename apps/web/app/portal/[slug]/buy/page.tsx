@@ -27,6 +27,14 @@ export default async function PortalBuyPage({
     .select("brand_color,portal_title,payment_instructions,pay_method,pay_number")
     .eq("isp_id", isp.id).maybeSingle();
 
+  // STK Push is offered only when this ISP has an ACTIVE, verified Daraja app.
+  // Anything else (no app, credentials rejected, turned off) means the buyer
+  // pays at the till and submits a receipt instead of pressing a button that
+  // can only fail.
+  const { data: provider } = await supabase.from("payment_providers")
+    .select("status").eq("isp_id", isp.id).eq("provider", "daraja").maybeSingle();
+  const stkAvailable = (provider?.status ?? null) === "active";
+
   // Same public read scope the portal itself uses: enabled hotspot/voucher only
   // (see 0026_portal_public.sql). A PPPoE package can never be bought here.
   const { data: pkg } = packageId
@@ -75,6 +83,7 @@ export default async function PortalBuyPage({
           payMethod={payMethod}
           payNumber={payNumber}
           support={support}
+          stkAvailable={stkAvailable}
         />
       </div>
 

@@ -6,18 +6,25 @@ import { useEffect, useRef, useState } from "react";
 // an account: the server prices the package and only the verified Daraja
 // callback (or an operator confirming a receipt) grants service.
 export default function BuyForm({
-  slug, packageId, price, instructions, payMethod, payNumber, support,
+  slug, packageId, price, instructions, payMethod, payNumber, support, stkAvailable,
 }: {
   slug: string; packageId: string; price: number;
   instructions: string | null;
   /** The M-Pesa target the ISP declared, or null when they have not set one. */
   payMethod: "till" | "paybill" | null; payNumber: string;
   support: string;
+  /**
+   * Whether this ISP has a verified Daraja app. When false the form opens on
+   * the manual till: an STK-first form on an ISP with no Daraja makes the
+   * customer press a button that can only fail, and hides the till number they
+   * actually need.
+   */
+  stkAvailable: boolean;
 }) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [receipt, setReceipt] = useState("");
-  const [mode, setMode] = useState<"stk" | "manual">("stk");
+  const [mode, setMode] = useState<"stk" | "manual">(stkAvailable ? "stk" : "manual");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -99,13 +106,15 @@ export default function BuyForm({
   return (
     <form onSubmit={submit} className="mt-5 space-y-3 text-left">
       <div className="flex gap-2 text-sm">
-        <button type="button" onClick={() => { setMode("stk"); setErr(null); }}
-          className={mode === "stk" ? "btn-primary btn-sm" : "btn-ghost btn-sm"}>
-          Pay with M-Pesa
-        </button>
+        {stkAvailable && (
+          <button type="button" onClick={() => { setMode("stk"); setErr(null); }}
+            className={mode === "stk" ? "btn-primary btn-sm" : "btn-ghost btn-sm"}>
+            Pay with M-Pesa
+          </button>
+        )}
         <button type="button" onClick={() => { setMode("manual"); setErr(null); }}
           className={mode === "manual" ? "btn-primary btn-sm" : "btn-ghost btn-sm"}>
-          Already paid
+          {stkAvailable ? "Already paid" : "I have paid — enter receipt"}
         </button>
       </div>
 

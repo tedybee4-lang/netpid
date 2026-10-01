@@ -59,6 +59,16 @@ export default function MpesaSettingsPage() {
       setErr("Choose how your customers pay, then enter the Till or PayBill number.");
       return;
     }
+    // Same rule the server enforces, checked here so the operator is told
+    // before the round trip rather than after.
+    const declared = (form.payment_method === "till" ? form.till_number : form.paybill).trim();
+    if (creds.length === 4 && declared && form.shortcode.trim() !== declared) {
+      setErr(`Daraja pays STK Push money into the number its app was issued for, so your `
+        + `business shortcode must be ${declared}. Customers would otherwise pay `
+        + `${form.shortcode.trim()} and the money would never reach your `
+        + `${form.payment_method === "till" ? "till" : "PayBill"}.`);
+      return;
+    }
     setBusy(true);
     try {
       const r = await fetch("/api/payments/daraja-config", {
@@ -152,8 +162,13 @@ export default function MpesaSettingsPage() {
               Skip this entirely if your customers pay at a till or PayBill and type
               the receipt code in. Only add your Safaricom Daraja app if Safaricom
               has issued you one. They are encrypted with APP_ENCRYPTION_KEY before
-              storage and are never displayed back. Test in sandbox first with
-              254700000000 before going live.
+              storage and are never displayed back.
+            </p>
+            <p className="hint">
+              <b>Your business shortcode must be the same number as the Till/PayBill
+              above.</b> Daraja pays STK Push money into the Till/PayBill the app was
+              issued for, so a different shortcode would send every customer payment
+              to someone else&rsquo;s account.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
@@ -177,17 +192,25 @@ export default function MpesaSettingsPage() {
                 <label className="label" htmlFor="d-short">Business shortcode</label>
                 <input id="d-short" className="input" inputMode="numeric"
                   value={form.shortcode} onChange={(e) => set("shortcode", e.target.value)}
-                  placeholder="174379" />
+                  placeholder={form.payment_method === "till" ? "Your Till number" : "Your PayBill number"} />
               </div>
             </div>
             <div>
               <label className="label" htmlFor="d-env">Environment</label>
               <select id="d-env" className="input" value={form.environment}
                 onChange={(e) => set("environment", e.target.value)}>
-                <option value="sandbox">sandbox</option>
-                <option value="production">production</option>
+                <option value="sandbox">sandbox (testing - no real money)</option>
+                <option value="production">production (real money)</option>
               </select>
             </div>
+            {form.environment === "sandbox" && (
+              <p className="err-box">
+                Sandbox is Safaricom&rsquo;s test system. Customers who approve a
+                sandbox STK prompt pay a Safaricom test account and <b>no money
+                reaches you</b>. Use sandbox only to check the flow, then switch
+                to production with the credentials Safaricom issued you.
+              </p>
+            )}
           </div>
         </details>
       </form>

@@ -127,6 +127,25 @@ export async function POST(req: Request) {
     }, { status: 400 });
   }
 
+  // Daraja collects STK Push money into the Till/PayBill its app was ISSUED
+  // for: sendStkPush uses the stored shortcode as both BusinessShortCode and
+  // PartyB, and the declared till_number is never sent to Safaricom at all.
+  //
+  // So a shortcode that differs from the ISP's live pay target is not a
+  // cosmetic mismatch - it silently routes every customer payment into a
+  // different account, which is how an ISP ends up with a working portal and
+  // an empty till. Reject it here rather than letting it reach Safaricom.
+  const declaredNumber = target.method === "till" ? target.till : target.paybill;
+  if (hasCreds && declaredNumber && supplied.shortcode !== declaredNumber) {
+    return NextResponse.json({
+      error: `Your Daraja app was issued for shortcode ${supplied.shortcode}, but your `
+        + `${target.method === "till" ? "Till" : "PayBill"} is ${declaredNumber}. Daraja pays `
+        + `STK Push money into the number its app was issued for, so customers would pay `
+        + `${supplied.shortcode} and never ${declaredNumber}. Make them the same number, or `
+        + `leave the Daraja fields blank and take payments at your till.`,
+    }, { status: 400 });
+  }
+
   // Prove the credentials against Daraja BEFORE marking the provider active.
   // A saved-but-unverified secret is how an ISP ends up with a "connected"
   // badge and a 502 on every STK push, so 'active' is reserved for credentials
@@ -146,19 +165,26 @@ export async function POST(req: Request) {
 
   // No credentials means STK Push stays off. Manual payments against the till
   // or paybill are unaffected, which is the point: the operator keeps working.
+  // STK Push state is carried over, never derived from this save. Saving a Till
+  // number on its own must not turn STK on, and must not turn it off either:
+  // an ISP editing their till number is not making a decision about Daraja.
+  // The previous "envelope exists -> force active" rule was actively harmful:
+  // it re-enabled STK Push against a stale sandbox app, routing customer money
+  // to Safaricom's test account every time the ISP saved their own till.
+  const { data: priorProvider } = await svc.from("payment_providers")
+    .select("id, status").eq("isp_id", a.ok.ispId).eq("provider", "daraja").maybeSingle();
+
   const { data: provider, error } = await svc.from("payment_providers").upsert({
     isp_id: a.ok.ispId, provider: "daraja",
     payment_method: target.method, till_number: target.till, paybill: target.paybill,
-    status: verified ? "active" : "disabled",
+    status: hasCreds ? (verified ? "active" : "disabled") : (priorProvider?.status ?? "disabled"),
   }, { onConflict: "isp_id,provider" }).select("id").single();
   if (error || !provider) {
     return NextResponse.json({ error: error?.message ?? "Could not save" }, { status: 400 });
   }
 
   // The envelope is only written when credentials were actually supplied. An
-  // ISP running on a till must not have a row implying a Daraja app exists, and
-  // an existing envelope is left alone when they save just their number, so
-  // re-saving the till never silently switches STK Push off.
+  // ISP running on a till must not have a row implying a Daraja app exists.
   if (hasCreds) {
     let encrypted: string;
     try {
@@ -170,16 +196,6 @@ export async function POST(req: Request) {
       provider_id: (provider as { id: string }).id,
       encrypted_secret: encrypted, key_version: 1,
     }, { onConflict: "provider_id" });
-  } else {
-    const { data: existingEnvelope } = await svc.from("payment_provider_credentials")
-      .select("provider_id").eq("provider_id", (provider as { id: string }).id).maybeSingle();
-    if (existingEnvelope) {
-      // Credentials were stored on an earlier save. Leave the envelope in place
-      // and keep the provider active so STK Push keeps working; only a deliberate
-      // removal should turn it off, and that is not something this form does.
-      await svc.from("payment_providers")
-        .update({ status: "active" }).eq("id", (provider as { id: string }).id);
-    }
   }
 
   // Mirror the live pay target onto isp_settings. The captive portal is
@@ -219,8 +235,22 @@ export async function POST(req: Request) {
     credentials_stored: hasCreds,
     environment: d.environment,
     stk_push: hasCreds ? (verified ? "on" : "off") : "off",
+    // The number customer money actually lands in. For STK Push this is the
+    // shortcode, NOT the declared till - showing the till here would be a lie.
+    collects_into: hasCreds ? supplied.shortcode : declaredNumber,
+    manual_pay_number: declaredNumber,
+    // Sandbox routes every push to a Safaricom test account. No real money
+    // moves, so the operator has to be told rather than left to discover it
+    // from a customer's M-Pesa prompt.
+    test_mode: d.environment === "sandbox",
     warning: hasCreds
-      ? (verified ? null : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`)
+      ? (verified
+        ? (d.environment === "sandbox"
+          ? `STK Push is connected in SANDBOX. Customers approving this prompt pay `
+            + `${supplied.shortcode} in Safaricom's test account - no real money reaches `
+            + `you. Switch to production to take real payments.`
+          : null)
+        : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`)
       : null,
   });
 }
