@@ -382,10 +382,26 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p("");
     c("RADIUS is the authentication authority. NO local hotspot user is");
     c("created: that would be an account nobody bills and nobody can revoke.");
+    // The cookie setting is a version trap. RouterOS 6 has use-cookie=yes;
+    // RouterOS 7 removed it and exposes http-cookie-lifetime instead. Guessing
+    // wrong fails the WHOLE line, so the profile is never created at all and
+    // the portal silently does not exist.
+    //
+    // Rather than bet on one spelling, both are tried and the outcome is
+    // reported. An unknown property name must never cost the operator the rest
+    // of the profile.
     p(`:if ([:len [/ip hotspot profile find name=netpid]] = 0) do={`);
-    p(`  /ip hotspot profile add name=netpid use-radius=yes radius-interim-update=5m use-cookie=yes login-by=http-chap,https,http-pap comment=${q(`${tag} hs-profile`)}`);
+    p(`  :do {`);
+    p(`    /ip hotspot profile add name=netpid use-radius=yes radius-interim-update=5m use-cookie=yes login-by=http-chap,https,http-pap comment=${q(`${tag} hs-profile`)}`);
+    p(`  } on-error={`);
+    p(`    :do {`);
+    p(`      /ip hotspot profile add name=netpid use-radius=yes radius-interim-update=5m http-cookie-lifetime=1h login-by=http-chap,https,http-pap comment=${q(`${tag} hs-profile`)}`);
+    p(`    } on-error={`);
+    p(`      :put "WARN: could not create the HotSpot profile; see the error above."`);
+    p(`    }`);
+    p(`  }`);
     p("} else={");
-    p(`  /ip hotspot profile set [find name=netpid] use-radius=yes radius-interim-update=5m`);
+    p(`  :do { /ip hotspot profile set [find name=netpid] use-radius=yes radius-interim-update=5m } on-error={ :do { /ip hotspot profile set [find name=netpid] use-radius=yes radius-interim-update=5m } on-error={ } }`);
     p("}");
     p("");
     if (o.hotspotSubnet && o.hotspotRange) {
@@ -401,12 +417,25 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       p(`  /ip pool add name=${q(o.hotspotRange)} ranges=${q(o.hotspotRange)} comment=${q(`${tag} hs-pool`)}`);
       p("}");
       p("");
+      // dns-name is a second version trap: it exists in RouterOS 6 and was
+      // removed in 7. Setting it unguarded fails the entire /ip hotspot add, so
+      // the customer-facing portal is never created even though everything else
+      // about it is correct. Tried first, then omitted, and the operator is
+      // told what is left to do by hand.
       p(`:if ([:len [/ip hotspot find name=netpid]] = 0) do={`);
-      p(`  /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid address-pool=${q(o.hotspotRange)} dns-name=${q(o.hotspotDnsName)} add-default-route=yes address-type=ethernet comment=${q(`${tag} hotspot`)}`);
-      p(`  :put "HotSpot created."`);
+      p(`  :do {`);
+      p(`    /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid address-pool=${q(o.hotspotRange)} dns-name=${q(o.hotspotDnsName)} add-default-route=yes address-type=ethernet comment=${q(`${tag} hotspot`)}`);
+      p(`  } on-error={`);
+      p(`    :do {`);
+      p(`      /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid address-pool=${q(o.hotspotRange)} add-default-route=yes address-type=ethernet comment=${q(`${tag} hotspot`)}`);
+      p(`      :put "HotSpot created WITHOUT a DNS name."`);
+      p(`      :put ("Add a DNS record for " . ${q(o.hotspotDnsName)} . " pointing at the router, and set it on the HotSpot server.")`);
+      p(`    } on-error={`);
+      p(`      :put ("FAILED to create the HotSpot server on " . ${q(o.bridgeIface)} . ". See the error above.")`);
+      p(`    }`);
+      p(`  }`);
       p("} else={");
-      p(`  /ip hotspot set [find name=netpid] profile=netpid add-default-route=yes dns-name=${q(o.hotspotDnsName)} address-pool=${q(o.hotspotRange)}`);
-      p(`  :put "HotSpot updated."`);
+      p(`  :do { /ip hotspot set [find name=netpid] profile=netpid add-default-route=yes dns-name=${q(o.hotspotDnsName)} address-pool=${q(o.hotspotRange)} } on-error={ :do { /ip hotspot set [find name=netpid] profile=netpid add-default-route=yes address-pool=${q(o.hotspotRange)} } on-error={ :put "WARN: could not update the HotSpot server." } }`);
       p("}");
     } else {
       c("No HotSpot subnet or range was supplied, so no HotSpot server was");
@@ -468,7 +497,17 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   p("");
   c("Accounting is what makes NETPID see usage at all. Without it every");
   c("subscriber looks idle and the bill is quietly wrong rather than broken.");
-  if (o.radiusSecret) {
+  // A RADIUS entry needs BOTH a server address and a shared secret. The secret
+  // alone is not enough, and attempting the add anyway produced
+  // "failure: valid address required" - an error that reads like a malformed
+  // command rather than "this ISP has no RADIUS server configured yet".
+  const radiusUsable = !!o.radiusSecret && !!String(o.radiusServer ?? "").trim();
+  if (o.radiusSecret && !String(o.radiusServer ?? "").trim()) {
+    c("A shared secret was supplied but no RADIUS SERVER address is configured");
+    c("for this ISP, so no RADIUS client can be created. Skipping rather than");
+    c("emitting a line that would fail with a misleading error.");
+  }
+  if (radiusUsable) {
     p(`:if ([:len [${RM} find comment=${q(`NETPID:${o.nasShortname}`)}]] = 0) do={`);
     // The port properties are authentication-port and accounting-port.
     // auth-port and acct-port do not exist, so the whole line is rejected and

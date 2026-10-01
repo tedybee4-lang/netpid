@@ -698,6 +698,46 @@ test("the HotSpot pool holds the range only, never the subnet it sits in", () =>
   assert.doesNotMatch(GEN, /ranges="10\.5\.50\.0\/24,/, "never put the subnet in the same pool as a range inside it");
 });
 
+test("a version-specific property never takes the whole object down with it", () => {
+  // Field report, three separate failures in one run:
+  //
+  //   bad parameter use-cookie (line 2 column 93)
+  //   bad parameter dns-name  (line 2 column 134)
+  //
+  // Both are properties that exist in RouterOS 6 and were removed in 7. An
+  // unknown property name rejects the ENTIRE line, so not only the cookie
+  // setting was lost - the HotSpot profile and the HotSpot server were never
+  // created at all, and the customer-facing portal silently did not exist.
+  //
+  // Each is now attempted in a :do/on-error chain: try the v6 spelling, fall
+  // back to the v7 one, and if neither works say so and carry on. A spelling
+  // this generator gets wrong costs one setting, never the object.
+  for (const prop of ["use-cookie", "http-cookie-lifetime", "dns-name"]) {
+    const re = new RegExp(prop.replace("-", "\\-"));
+    assert.ok(re.test(GEN), `${prop} should appear in the script`);
+  }
+  // The fallbacks must be inside on-error blocks, not a single flat line.
+  const guards = [...GEN.matchAll(/on-error=\{/g)].length;
+  assert.ok(guards >= 4,
+    `expected the version traps to be guarded, found ${guards} on-error handlers`);
+  // And the bare (unguarded) forms must not be the only form present.
+  assert.ok(/use-cookie=yes login-by/.test(GEN), "the v6 spelling is tried first");
+  assert.ok(/http-cookie-lifetime=1h/.test(GEN), "the v7 fallback is tried too");
+});
+
+test("RADIUS is skipped cleanly when the ISP has no server configured", () => {
+  // Field report: failure: valid address required
+  //
+  // A secret was supplied but no server address, so the add was attempted with
+  // an empty address. The error reads like a malformed command rather than
+  // "this ISP has no RADIUS server yet", and the whole RADIUS section is lost.
+  const s = buildConfigureScript(baseOpts({ radiusSecret: "s3cret", radiusServer: "" }));
+  assert.doesNotMatch(s, /\/radius add/, "no add is emitted without a server address");
+  assert.match(s, /SKIP RADIUS/, "and the operator is told why");
+  // With both present it is still created.
+  assert.match(GEN, /\/radius add service=/, "a complete pair still creates the entry");
+});
+
 test("every mode demands its own ports", () => {
   const hs = validateSelection({ mode: "HOTSPOT", wan_interface: "ether1", hotspot_interfaces: [] }, DETECTED);
   assert.ok(hs.errors.some((e) => /HotSpot mode needs at least one/.test(e)));
@@ -891,7 +931,15 @@ test("a re-run updates instead of duplicating", () => {
     for (const l of creates(s)) {
       // Walk backwards to the nearest block opener; it must be a find test.
       const i = lines.indexOf(l);
-      const opener = lines.slice(0, i).reverse().find((x) => /\{\s*$/.test(x) || / do=\{\s*$/.test(x));
+        // A ":do {" is NOT an existence check, so it is skipped rather than treated
+        // as the guard. It appears when a create is wrapped in a version fallback
+        // - try the v6 property spelling, on failure retry with the v7 one - and
+        // stopping at the :do would report every one of those as unguarded. The find
+        // test is further out and is the real guard.
+        const opener = lines.slice(0, i).reverse()
+          .find((x) => (/\{\s*$/.test(x) || / do=\{\s*$/.test(x))
+            && !/^\s*:do\s*\{\s*$/.test(x)
+            && !/^\s*\}/.test(x));
       assert.ok(opener && /\[:len \[.*find/.test(opener),
         `${label}: create is not guarded: ${l.slice(0, 60)}`);
       guarded++;
