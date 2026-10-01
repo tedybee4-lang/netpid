@@ -3,7 +3,8 @@ import { resolveIsp } from "@/lib/isp";
 import { createServiceClient } from "@/lib/supabase/server";
 import { checkRateLimit, encryptSecret, randomSecret } from "@/lib/secrets";
 import { resolveRadiusHost } from "@/lib/radius-host";
-import { buildRouterosScripts, normalizeRosVersion, rosName } from "@/lib/routeros";
+import { buildRouterosScripts, buildWireguardScript, normalizeRosVersion, rosName } from "@/lib/routeros";
+import { allocateTunnelSubnet, encryptTunnelKey, generateKeyPair } from "@/lib/wireguard";
 import { z } from "zod";
 
 /**
@@ -20,36 +21,6 @@ const quickRouterSchema = z.object({
   ros_version: z.enum(["6", "7"]).optional(),
   wifi_ssid: z.string().max(32).optional().or(z.literal("")),
 });
-
-function ipToInt(ip: string): number {
-  return ip.split(".").reduce((acc, o) => ((acc << 8) + Number(o)) >>> 0, 0);
-}
-function intToIp(n: number): string {
-  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
-}
-function parseCidr(cidr: string) {
-  const [ip, lenRaw] = String(cidr).split("/");
-  const prefix = Math.min(32, Math.max(8, Number(lenRaw ?? 24) || 24));
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  const network = (ipToInt(ip) & mask) >>> 0;
-  const broadcast = (network | (~mask >>> 0)) >>> 0;
-  return { network, prefix, broadcast, size: broadcast - network + 1 };
-}
-
-/**
- * Next unused management address in the subnet. Skips the network address, the
- * broadcast address, the gateway and anything a router already claims, then
- * advances the stored cursor so the next call continues from here.
- */
-function nextFreeHost(subnet: string, startOffset: number, reserved: Set<string>): string | null {
-  const { network, size } = parseCidr(subnet);
-  const usableEnd = size - 2; // exclude network + broadcast addresses
-  for (let off = Math.max(2, startOffset); off <= usableEnd; off++) {
-    const candidate = intToIp((network + off) >>> 0);
-    if (!reserved.has(candidate)) return candidate;
-  }
-  return null;
-}
 
 type Defaults = {
   mgmt_subnet: string; mgmt_gateway: string; next_host_offset: number;
@@ -103,46 +74,69 @@ export async function POST(req: Request) {
     }, { status: 503 });
   }
 
-  // Reserve everything this ISP already uses so we never hand out a duplicate.
-  const { data: existingRouters } = await svc.from("routers")
-    .select("host").eq("isp_id", r.ispId);
-  const reserved = new Set<string>((existingRouters ?? []).map((x) => String(x.host)));
-  if (d.mgmt_gateway) reserved.add(d.mgmt_gateway);
-
-  const host = nextFreeHost(d.mgmt_subnet, d.next_host_offset ?? 1, reserved);
-  if (!host) {
-    return NextResponse.json({
-      error: `No free address left in ${d.mgmt_subnet}. Widen the subnet in provisioning defaults.`,
-    }, { status: 409 });
-  }
-  const { network, size } = parseCidr(d.mgmt_subnet);
-  await svc.from("isp_router_defaults")
-    .update({ next_host_offset: (ipToInt(host) - network + 1) % Math.max(1, size) })
-    .eq("isp_id", r.ispId);
-
   const version = normalizeRosVersion(ros_version ?? d.ros_version);
   const apiPassword = randomSecret(12);
   const shortname = rosName(`${d.nas_prefix}-${name}`, "netpid-nas");
   const identity = rosName(name, "netpid-router");
 
+  // ---- The management address ---------------------------------------------
+  // This used to hand out the next free host from isp_router_defaults
+  // .mgmt_subnet, which defaulted to 10.10.10.0/24. That range is not routed
+  // anywhere: the routers sit on separate customer LANs and NETPID's only
+  // managed path is the WireGuard tunnel on 10.90.0.0/16. Every router created
+  // that way was born permanently unreachable, and the dashboard could not say
+  // so - it just showed UNKNOWN forever.
+  //
+  // So the address is a real tunnel address. It is carved from 10.90.0.0/16,
+  // which wg0 actually owns, so when the tunnel comes up this host becomes
+  // reachable with no further change. Until then the router is honestly
+  // "wireguard_enrollment_required", not "unknown".
+  const tunnel = await allocateTunnelSubnet();
+  // NETPID's half of the key pair. The private half is encrypted before it is
+  // stored and never leaves the server; the router generates its own half on
+  // the box, which is why enrolment is a two-step handshake and not a one-shot
+  // script.
+  const keys = generateKeyPair();
+
   const { data: router, error: rErr } = await svc.from("routers").insert({
-    isp_id: r.ispId, name, identity, host,
+    isp_id: r.ispId, name, identity, host: tunnel.routerIp,
     api_port: d.api_port, api_ssl_port: d.api_ssl_port,
     api_username: d.api_username, use_ssl: d.use_ssl,
     radius_server_host: radius.host,
     ros_version: version, script_ros_version: version,
     provisioned_via: "quick", status: "unknown",
+    lifecycle: "wireguard_enrollment_required",
   }).select("id,name,host").single();
   if (rErr) return NextResponse.json({ error: rErr.message }, { status: 400 });
+
+  // The tunnel row holds NETPID's half of the key pair. The private half is
+  // encrypted here and never leaves the server; the router generates ITS half
+  // on the box, which is why enrolment is a two-step handshake and not a
+  // one-shot script.
+  const { error: tErr } = await svc.from("router_tunnels").insert({
+    isp_id: r.ispId, router_id: (router as { id: string }).id,
+    tunnel_subnet: tunnel.subnet, vps_tunnel_ip: tunnel.vpsIp, router_tunnel_ip: tunnel.routerIp,
+    server_public_key: keys.publicKey,
+    server_private_key_encrypted: encryptTunnelKey(keys.privateKey),
+    // 'pending', not 'awaiting_router_key': router_tunnels.status has a check
+    // constraint of (pending|provisioned|connected|unreachable|revoked). The
+    // router has no key yet, so the tunnel is pending - that is what 'pending'
+    // means here.
+    router_public_key: null, status: "pending",
+  });
+  if (tErr) return NextResponse.json({ error: tErr.message }, { status: 400 });
 
   await svc.from("router_credentials")
     .insert({ router_id: router.id, encrypted_password: encryptSecret(apiPassword) });
 
   // A RADIUS NAS client is created for every router so FreeRADIUS knows it.
+  // nasname is the TUNNEL address: that is the only source address the router
+  // will have from NETPID's point of view, and it keeps accounting consistent
+  // with the address the worker dials.
   const secretOnce = randomSecret();
   const { data: nas } = await svc.from("radius_nas").insert({
     isp_id: r.ispId, router_uuid: router.id, shortname,
-    nasname: host, sync_status: "pending",
+    nasname: tunnel.routerIp, sync_status: "pending",
   }).select("id,shortname").single();
   if (nas) {
     await svc.from("radius_nas_secrets")
@@ -156,7 +150,7 @@ export async function POST(req: Request) {
   });
   await svc.from("router_provision_log").insert({
     isp_id: r.ispId, router_id: router.id, action: "created", source: "quick",
-    detail: { shortname, host, auto_assigned: true },
+    detail: { shortname, host: tunnel.routerIp, tunnel: tunnel.subnet, auto_assigned: true },
   });
 
   return NextResponse.json({
@@ -165,12 +159,23 @@ export async function POST(req: Request) {
     detected_version: version,
     secret_once: secretOnce,
     api_password_once: apiPassword,
+    lifecycle: "wireguard_enrollment_required",
+    // Phase 1 of enrolment. The operator runs this ON the router, then pastes
+    // the printed public key back into the router's NETPID page, which yields
+    // the complete tunnel script.
+    wireguard_script: buildWireguardScript({
+      routerName: name,
+      serverPublicKey: keys.publicKey,
+      routerTunnelIp: tunnel.routerIp,
+      vpsTunnelIp: tunnel.vpsIp,
+      vpsEndpoint: process.env.NETPID_WG_ENDPOINT?.trim() || undefined,
+    }),
     // Both scripts, always: the operator pastes the one that matches their box.
     scripts: buildRouterosScripts({
       shortname,
       radiusServer: radius.host,
       secret: secretOnce,
-      routerIp: host,
+      routerIp: tunnel.routerIp,
       authPort: d.radius_auth_port,
       acctPort: d.radius_acct_port,
       coaPort: d.radius_coa_port,
@@ -185,10 +190,16 @@ export async function POST(req: Request) {
       useSsl: d.use_ssl,
     }),
     defaults_applied: {
-      host, api_username: d.api_username, api_port: d.api_port,
+      // The tunnel address, which is the only address NETPID can ever reach
+      // this router on. Reporting anything else here is what made an unroutable
+      // 10.10.10.x look like a completed setup.
+      host: tunnel.routerIp, tunnel: tunnel.subnet,
+      api_username: d.api_username, api_port: d.api_port,
       api_ssl_port: d.api_ssl_port, use_ssl: d.use_ssl,
       radius_server: radius.host, radius_source: radius.source, shortname,
     },
-    warning: "Copy the RADIUS secret and the API password now — neither is shown again.",
+    warning: "Copy the RADIUS secret and the API password now — neither is shown again. "
+      + "This router is NOT yet manageable: run the WireGuard script on the router, paste "
+      + "its public key back into this router's page, then run the tunnel script it gives you.",
   }, { status: 201 });
 }

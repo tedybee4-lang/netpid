@@ -32,7 +32,12 @@ export async function routerHealth(sb, job) {
     const memFree = Number(res?.["free-memory"] ?? 0);
     const memTotal = Number(res?.["total-memory"] ?? 0);
     const memPct = memTotal ? Math.round((1 - memFree / memTotal) * 100) : null;
-    await sb.from("routers").update({ status: "online", last_seen_at: new Date().toISOString(),
+    // lifecycle 'online' is written ONLY here, on a real API round-trip. A
+    // database row, a RADIUS server entry or a generated script must never be
+    // able to produce it - that conflation is what made five unenrolled routers
+    // indistinguishable from five healthy ones.
+    await sb.from("routers").update({ status: "online", lifecycle: "online",
+      last_seen_at: new Date().toISOString(),
       ros_version: res?.["version"] ?? null, model: res?.["board-name"] ?? null,
       identity: ident?.["name"] ?? null, uptime_seconds: uptime,
       cpu_load: cpu || null, mem_used_pct: memPct }).eq("id", router.id);
@@ -42,7 +47,12 @@ export async function routerHealth(sb, job) {
       cpu_load: cpu || null, mem_used_pct: memPct, detail: {} });
     return { ok: true, online: true };
   } catch (e) {
-    await sb.from("routers").update({ status: "offline" }).eq("id", router_id);
+    // A failed check must not erase a real prior success, and it must not
+    // overwrite the enrolment state either. If the router was never enrolled
+    // that is still the truth, so only advance a router that HAD been online.
+    await sb.from("routers")
+      .update({ status: "offline", lifecycle: "routeros_unreachable" })
+      .eq("id", router_id).neq("lifecycle", "wireguard_enrollment_required");
     await sb.from("router_health").insert({ router_id, reachable: false,
       latency_ms: Date.now() - started, detail: { error: String(e.message ?? e) } });
     throw new Error("Router connection failed: " + String(e.message ?? e));
