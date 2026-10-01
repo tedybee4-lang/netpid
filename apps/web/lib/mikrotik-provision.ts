@@ -234,12 +234,18 @@ function isPrivateHost(h: string): boolean {
  * Hosts that are always treated as production, even though the generic rules
  * below would flag them.
  *
- * A Vercel apex such as netpid.vercel.app is indistinguishable from a preview
- * by SHAPE alone: both are "something.vercel.app". Guessing wrong in the
- * permissive direction bakes a deleted deployment into a router, and guessing
- * wrong in the strict direction silently omits the heartbeat. Neither is
- * acceptable, so the production host is named explicitly and everything else on
- * vercel.app is treated as throwaway.
+ * GUESSING IS NOT SAFE IN EITHER DIRECTION, SO DO NOT GUESS.
+ *
+ * A Vercel apex such as netpid.vercel.app is indistinguishable from a preview by
+ * shape alone. Guessing permissively bakes a deleted deployment into a router;
+ * guessing strictly omits the heartbeat. Neither is acceptable, so the
+ * production host is named explicitly and everything else on vercel.app is
+ * treated as throwaway.
+ *
+ * Steps 4 and 5: set the variable in the Vercel PRODUCTION environment only, then
+ * REDEPLOY. It must be absent from Preview on purpose, so a preview deployment can
+ * never become the permanent heartbeat destination for a real router.
+ * See network-worker/scripts/PROVISIONING-ENV.md.
  */
 const STABLE_HOSTS = (process.env.NETPID_STABLE_HOSTS ?? "")
   .split(",")
