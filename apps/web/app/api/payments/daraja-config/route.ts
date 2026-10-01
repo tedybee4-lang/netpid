@@ -211,7 +211,13 @@ export async function POST(req: Request) {
   });
 
   return NextResponse.json({
-    ok: true, verified, environment: d.environment,
+    ok: true,
+    // null, not false, when no credentials were supplied. "false" would claim
+    // Safaricom rejected something that was never sent, and the client shows
+    // a rejection error on it.
+    verified: hasCreds ? verified : null,
+    credentials_stored: hasCreds,
+    environment: d.environment,
     stk_push: hasCreds ? (verified ? "on" : "off") : "off",
     warning: hasCreds
       ? (verified ? null : `Saved, but Daraja refused the credentials so STK Push stays off: ${warning}`)

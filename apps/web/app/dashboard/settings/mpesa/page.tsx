@@ -67,17 +67,16 @@ export default function MpesaSettingsPage() {
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Could not save");
-      // A 200 with verified:false means it was stored but Safaricom refused it,
-      // so the provider stays 'disabled' and STK Push will not be offered.
-      if (j.verified === false) {
-        setErr(j.warning ?? "Daraja rejected the credentials.");
+      // Branch on the warning, not on `verified`. `verified:false` used to mean
+      // both "Safaricom refused these" and "you never sent any", so saving a
+      // Till number on its own showed a Daraja rejection error.
+      if (j.warning) {
+        setErr(j.warning);
       } else if (j.stk_push === "on") {
         setMsg(`STK Push connected (${j.environment}). Credentials are encrypted at rest and never shown again.`);
+        setForm((f) => ({ ...f, consumer_key: "", consumer_secret: "", passkey: "" }));
       } else {
         setMsg("Saved. Customers can now pay to this number and enter their receipt code.");
-      }
-      if (j.stk_push === "on") {
-        setForm((f) => ({ ...f, consumer_key: "", consumer_secret: "", passkey: "" }));
       }
       load();
     } catch (e: unknown) {
