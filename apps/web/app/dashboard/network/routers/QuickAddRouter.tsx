@@ -8,16 +8,22 @@ interface Result {
   detected_version: string;
   secret_once: string;
   api_password_once: string;
-  scripts: { v6: string; v7: string };
+  /**
+   * THE script the operator pastes. This is buildRouterosInstaller()'s
+   * output, not the old RADIUS/PPP-only script: it carries the whole router.
+   * The old response also carried `scripts`, which the UI rendered and which
+   * configured no LAN, DHCP, NAT, firewall, HotSpot or PPPoE at all. That
+   * field is gone from the API and from this type, so it cannot come back by
+   * accident.
+   */
+  installer: string;
+  /** Site values NETPID will not invent, and so leaves blank. */
+  installer_missing: string[];
+  wireguard_script: string;
+  lifecycle: string;
   defaults_applied: Record<string, string>;
   warning: string;
 }
-
-// Both scripts are always returned; these describe what differs between them.
-const VERSIONS: { key: "v6" | "v7"; label: string; note: string }[] = [
-  { key: "v6", label: "6", note: "Radio stays at /interface/wireless (wlan1). No HttpOnly cookie flag." },
-  { key: "v7", label: "7", note: "v7.14+ radio is /interface/wifi (wifi1), and the HotSpot cookie gets HttpOnly." },
-];
 
 /**
  * Name-only provisioning. The operator types a router name; NETPID assigns the
@@ -54,10 +60,10 @@ export default function QuickAddRouter() {
     }
   }
 
-  function download(which: "v6" | "v7", text: string) {
+  function download(text: string) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
-    a.download = `${res?.router.name ?? "router"}-ros${which}.rsc`;
+    a.download = `${res?.router.name ?? "router"}-netpid-installer.rsc`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -89,9 +95,10 @@ export default function QuickAddRouter() {
             <select id="q-ver" className="input" value={version}
               onChange={(e) => setVersion(e.target.value as "6" | "7")}>
               <option value="7">RouterOS 7 (7.x, wifiwave2)</option>
-              <option value="6">RouterOS 6 (6.x)</option>
             </select>
-            <p className="hint">Both scripts are generated; this picks the default tab.</p>
+            <p className="hint">The installer targets RouterOS 7.x and refuses to
+              run on 6.x, which moved RADIUS out of /ip and would leave a
+              half-configured router.</p>
           </div>
           <div>
             <label className="label" htmlFor="q-ssid">Wi-Fi SSID (optional)</label>
@@ -141,25 +148,47 @@ export default function QuickAddRouter() {
             <p className="hint mt-2">{res.warning}</p>
           </div>
 
-          {VERSIONS.map(({ key, label, note }) => (
-            <section key={key} className="card">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="panel-title">RouterOS {label} script</h2>
-                <div className="flex gap-2">
-                  <button type="button" className="btn-ghost btn-sm"
-                    onClick={() => copy(key, res.scripts[key])}>
-                    {copied === key ? "Copied" : "Copy"}
-                  </button>
-                  <button type="button" className="btn-ghost btn-sm"
-                    onClick={() => download(key, res.scripts[key])}>
-                    Download .rsc
-                  </button>
-                </div>
-              </div>
-              <p className="hint mt-1">{note}</p>
-              <pre className="code-block mt-2 max-h-96 overflow-auto">{res.scripts[key]}</pre>
+          {res.installer_missing?.length > 0 && (
+            <section className="card border-amber-400 bg-amber-50">
+              <h2 className="panel-title text-amber-900">
+                Fill these in before the script will run
+              </h2>
+              <p className="hint mt-1 text-amber-900">
+                These are YOUR site values. NETPID will not invent a subnet, so the
+                script ships with them blank and stops on the router if any is
+                still empty. Edit SECTION A of the .rsc, or set them once in
+                provisioning defaults.
+              </p>
+              <ul className="mt-2 list-disc pl-5 text-xs text-amber-900">
+                {res.installer_missing.map((m: string) => (
+                  <li key={m} className="font-mono">{m}</li>
+                ))}
+              </ul>
             </section>
-          ))}
+          )}
+
+          <section className="card">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="panel-title">NETPID router installer (RouterOS 7)</h2>
+              <div className="flex gap-2">
+                <button type="button" className="btn-ghost btn-sm"
+                  onClick={() => copy("installer", res.installer)}>
+                  {copied === "installer" ? "Copied" : "Copy"}
+                </button>
+                <button type="button" className="btn-ghost btn-sm"
+                  onClick={() => download(res.installer)}>
+                  Download .rsc
+                </button>
+              </div>
+            </div>
+            <p className="hint mt-1">
+              The complete router: preflight, identity, clock, DNS/NTP, WAN, LAN
+              bridge and addressing, DHCP, NAT, firewall, RADIUS with accounting
+              and CoA, HotSpot, PPPoE, WireGuard management, and a restricted
+              RouterOS API. Idempotent &mdash; safe to re-run.
+            </p>
+            <pre className="code-block mt-2 max-h-96 overflow-auto">{res.installer}</pre>
+          </section>
 
           <button className="btn-primary" onClick={() => router.push("/dashboard/network")}>
             Go to routers

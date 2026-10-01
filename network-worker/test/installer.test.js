@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildRouterosSetup } from "../src/routeros.mjs";
 import {
   buildRouterosInstaller, installerDefaults, installerMissing, isCidr, isWgKey,
 } from "../src/installer.mjs";
@@ -340,10 +341,155 @@ test("the web port also refuses to invent a network or a key", async () => {
   assert.doesNotMatch(s, /NP_WG_SERVER_PUB\s+"[A-Za-z0-9+/]{43}="/);
 });
 
-// ---------------------------------------------------------------------------
-// Completeness. Each of these proves one provisioning section is present, so a
-// future edit that drops a section fails here rather than on a live router.
-// ---------------------------------------------------------------------------
+// The bug this pins: buildRouterosInstaller() existed, but the dashboard
+// rendered buildRouterosSetup()'s RADIUS/PPP-only script, so operators were
+// handed identity+API+RADIUS+PPP AAA+CoA and believed the router was
+// provisioned. Every unit test above passed while that was true.
+test("the RADIUS/PPP-only generator cannot be reached by accident", async () => {
+  // The canonical twin refuses without the explicit opt-in...
+  assert.throws(() => buildRouterosSetup({ shortname: "s", radiusServer: "1.1.1.1" }),
+    /RADIUS\/PPP-only script/);
+  // ...and so does the web copy the dashboard actually imports.
+  const webRouteros = await import(pathToFileURL(
+    join(process.cwd(), "..", "apps", "web", "lib", "routeros.ts")).href);
+  assert.throws(() => webRouteros.buildRouterosSetup({ shortname: "s", radiusServer: "1.1.1.1" }),
+    /RADIUS\/PPP-only script/);
+  // With the opt-in it still works, because the repair tool needs it.
+  assert.match(buildRouterosSetup({ radiusOnly: true, shortname: "s", radiusServer: "1.1.1.1" }),
+    /\/radius/);
+});
+
+test("the old partial script cannot satisfy the full-installer contract", () => {
+  // The exact shape the dashboard was rendering.
+  const partial = buildRouterosSetup({ radiusOnly: true, shortname: "netpid-X", radiusServer: "10.0.0.5", secret: "x", identity: "X" });
+  // It has exactly the authentication plane the operator reported: identity,
+  // clock, DNS/NTP, the RouterOS API service, /radius and /radius incoming.
+  assert.match(partial, /# NAS shortname : netpid-X/);
+  assert.match(partial, /\/system identity set name=X/);
+  assert.match(partial, /\/ip service set api disabled=no/);
+  assert.match(partial, /\/radius add/);
+  assert.match(partial, /\/radius incoming/);
+  // Size is the giveaway: the partial is ~40 lines, the full installer ~890.
+  assert.ok(partial.split("\n").length < 80,
+    "the partial script is no longer the short one; re-check this test's premise");
+  assert.ok(S.split("\n").length > 700,
+    "the full installer should be the long one");
+  // ...and none of the router. Each of these is what an operator was missing.
+  for (const [what, re] of [
+    ["LAN bridge", /\/interface bridge add/],
+    ["DHCP server", /\/ip dhcp-server add/],
+    ["NAT masquerade", /action=masquerade/],
+    ["firewall", /\/ip firewall filter add/],
+    ["HotSpot server", /\/ip hotspot add/],
+    ["PPPoE server", /\/interface pppoe-server server add/],
+    ["WireGuard", /\/interface wireguard/],
+  ]) {
+    assert.doesNotMatch(partial, re,
+      `the old script unexpectedly has ${what}; the test premise is wrong`);
+  }
+  // And the full installer differs from it in every one of those ways.
+  for (const re of [
+    /\/interface bridge add/, /\/ip dhcp-server add/, /action=masquerade/,
+    /\/ip firewall filter add/, /\/ip hotspot add/,
+    /\/interface pppoe-server server add/, /\/interface wireguard add/,
+  ]) {
+    assert.match(S, re, `the full installer is missing ${re}`);
+  }
+});
+
+// The same module the dashboard imports, called the same way the Quick Add
+// route calls it, with the real database defaults for an ISP that has not
+// recorded its site networks yet.
+test("the Quick Add API path yields the full installer, not the partial one", async () => {
+  const web = await import(pathToFileURL(
+    join(process.cwd(), "..", "apps", "web", "lib", "routeros-installer.ts")).href);
+
+  // Mirrors app/api/routers/quick/route.ts exactly.
+  const d = {
+    mode: "EXISTING", wan: null, lan_bridge: null, lan_ports: null,
+    lan_subnet: null, lan_gateway: null, dhcp_pool: null,
+    hotspot_enabled: true, hotspot_subnet: null, hotspot_pool: null, hotspot_dns: null,
+    pppoe_enabled: true, pppoe_pool: null,
+  };
+  const response = {
+    installer: web.buildRouterosInstaller({
+      mode: d.mode,
+      identity: "REGRESSION-SITE",
+      wan: d.wan ?? "ether1",
+      lanBridge: d.lan_bridge ?? "bridge-lan",
+      lanPorts: d.lan_ports?.length ? d.lan_ports : ["ether2", "ether3", "ether4", "ether5"],
+      lanSubnet: d.lan_subnet ?? "",
+      lanGateway: d.lan_gateway ?? "",
+      dhcpPool: d.dhcp_pool ?? "",
+      hotspotEnabled: d.hotspot_enabled !== false,
+      hotspotSubnet: d.hotspot_subnet ?? "",
+      hotspotPool: d.hotspot_pool ?? "",
+      hotspotDnsName: d.hotspot_dns ?? "",
+      pppoeEnabled: d.pppoe_enabled !== false,
+      pppoePool: d.pppoe_pool ?? "",
+      radiusServer: "10.90.0.1",
+      radiusSecret: "generated-at-request-time",
+      nasShortname: "netpid-REGRESSION-SITE",
+      wgServerPublicKey: "iHtSz+Y0QLqLS+KxUqoTUn45AvMEvUe9NXGMAcK6QmY=",
+      wgServerTunnelIp: "10.90.0.1",
+      wgRouterTunnelIp: "10.90.0.2",
+      mgmtNetwork: "10.90.0.0/30",
+    }, { strict: false }),
+    installer_missing: web.installerMissing({ identity: "REGRESSION-SITE" }),
+  };
+
+  for (const [label, re] of [
+    ["A preflight/validation", /# SECTION B - PREFLIGHT/],
+    ["A preflight stop", /NETPID INSTALLER STOPPED/],
+    ["B identity", /# SECTION C - IDENTITY, BRIDGE, LAN/],
+    ["B clock", /\/system clock set time-zone-name=\$NP_TIMEZONE/],
+    ["B NTP", /\/system ntp client set servers=\$NP_NTP_SERVERS/],
+    ["B DNS", /\/ip dns set servers=\$NP_DNS_SERVERS/],
+    ["C WAN section", /# SECTION E - WAN AND NAT/],
+    ["C WAN interface list", /\/interface list add name=NETPID-WAN/],
+    ["C WAN dhcp client", /\/interface dhcp-client add interface=\$NP_WAN/],
+    ["D LAN bridge", /\/interface bridge add name=\$NP_LAN_BRIDGE/],
+    ["D LAN address", /\/ip address add address=\$NP_LAN_NET interface=\$NP_LAN_BRIDGE/],
+    ["D LAN ports", /\/interface bridge port add bridge=\$NP_LAN_BRIDGE/],
+    ["E DHCP pool", /\/ip pool add name=\$NP_DHCP_POOL/],
+    ["E DHCP server", /\/ip dhcp-server add name=\$NP_TAG interface=\$NP_LAN_BRIDGE/],
+    ["E DHCP network", /\/ip dhcp-server network add address=\$npNet gateway=\$NP_LAN_GATEWAY/],
+    ["F NAT masquerade", /\/ip firewall nat add chain=srcnat action=masquerade/],
+    ["G firewall section", /# SECTION F - FIREWALL/],
+    ["G firewall established", /connection-state=established,related comment="\$NP_TAG established"/],
+    ["G firewall WAN drop", /action=drop in-interface-list=NETPID-WAN comment="\$NP_TAG wan-drop"/],
+    ["H WireGuard section", /# SECTION J - WIREGUARD/],
+    ["H WireGuard interface", /\/interface wireguard add name=\$NP_WG_IFACE/],
+    ["H WireGuard peer", /\/interface wireguard peers add interface=\$NP_WG_IFACE/],
+    ["I API section", /# SECTION K - ROUTEROS API/],
+    ["I API-SSL", /\/ip service set api-ssl disabled=no/],
+    ["I API restricted", /address-list=NETPID-MGMT/],
+    ["I API certificate", /:certificate sign \[find name=NETPID\]/],
+    ["J RADIUS section", /# SECTION G - RADIUS \(auth, accounting, CoA\)/],
+    ["J RADIUS client", /\/radius add service=ppp,hotspot/],
+    ["J PPP accounting", /\/ppp\/aaa set use-radius=yes accounting=yes/],
+    ["J CoA", /\/radius incoming set accept=yes port=\$NP_RADIUS_COA/],
+    ["K HotSpot section", /# SECTION H - HOTSPOT/],
+    ["K HotSpot server", /\/ip hotspot add name=netpid/],
+    ["K HotSpot profile", /\/ip hotspot profile add name=netpid use-radius=yes/],
+    ["L PPPoE section", /# SECTION I - PPPoE SERVER/],
+    ["L PPPoE server", /\/interface pppoe-server server add service-name=\$NP_PPPOE_SERVICE/],
+    ["L PPPoE profile", /\/ppp profile add name=netpid use-radius=yes/],
+    ["final report", /# SECTION L - NETPID INSTALLATION REPORT/],
+  ]) {
+    assert.match(response.installer, re, `the Quick Add path is missing ${label}`);
+  }
+
+  // And it must NOT be the old short script.
+  assert.ok(response.installer.split("\n").length > 700,
+    "the Quick Add installer is too short to be the full router");
+  assert.ok(response.installer_missing.length > 0, "unset site values were not reported");
+  assert.doesNotMatch(response.installer, /RouterOS 6/);
+  assert.doesNotMatch(response.installer, /generated-at-request-time/,
+    "the RADIUS secret must not be written into the script");
+});
+
+
 
 test("the installer refuses to generate a complete script with missing input", () => {
   // The whole point of the task: a half-configured .rsc must not be emittable.

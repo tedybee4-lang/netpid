@@ -3,7 +3,7 @@ import { resolveIsp } from "@/lib/isp";
 import { createServiceClient } from "@/lib/supabase/server";
 import { checkRateLimit, encryptSecret, randomSecret } from "@/lib/secrets";
 import { resolveRadiusHost } from "@/lib/radius-host";
-import { buildRouterosScripts, buildWireguardScript, normalizeRosVersion, rosName } from "@/lib/routeros";
+import { buildWireguardScript, normalizeRosVersion, rosName } from "@/lib/routeros";
 import { allocateTunnelSubnet, encryptTunnelKey, generateKeyPair } from "@/lib/wireguard";
 import { buildRouterosInstaller, installerMissing } from "@/lib/routeros-installer";
 import { z } from "zod";
@@ -260,25 +260,6 @@ async function addRouter(req: Request) {
       wgServerPublicKey: keys.publicKey,
       wgServerTunnelIp: tunnel.vpsIp,
       wgRouterTunnelIp: tunnel.routerIp,
-    }),
-    // Both scripts, always: the operator pastes the one that matches their box.
-    scripts: buildRouterosScripts({
-      shortname,
-      radiusServer: radius.host,
-      secret: secretOnce,
-      routerIp: tunnel.routerIp,
-      authPort: d.radius_auth_port,
-      acctPort: d.radius_acct_port,
-      coaPort: d.radius_coa_port,
-      identity,
-      timezone: "Africa/Nairobi",
-      dnsServers: d.dns_servers,
-      ntpServers: d.ntp_servers,
-      wifiSsid: wifi_ssid || d.wifi_ssid || undefined,
-      country: d.country_code,
-      apiPort: d.api_port,
-      apiSslPort: d.api_ssl_port,
-      useSsl: d.use_ssl,
     }),
     defaults_applied: {
       // The tunnel address, which is the only address NETPID can ever reach

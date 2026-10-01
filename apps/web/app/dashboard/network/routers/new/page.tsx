@@ -9,7 +9,14 @@ type Created = {
   router: { id: string; name: string; host: string };
   nas: { id: string; shortname: string } | null;
   secret_once: string | null;
-  routeros_script: string;
+  /**
+   * The full NETPID installer. This replaced `routeros_script`, which carried
+   * only the RADIUS/PPP plane and configured no LAN, DHCP, NAT, firewall,
+   * HotSpot or PPPoE - a short script that looked like a completed setup.
+   */
+  installer: string;
+  /** Site values the operator must supply; NETPID will not invent them. */
+  installer_missing: string[];
   warning: string | null;
 };
 
@@ -52,7 +59,7 @@ export default function NewRouterPage() {
   async function copyScript() {
     if (!result) return;
     try {
-      await navigator.clipboard.writeText(result.routeros_script);
+      await navigator.clipboard.writeText(result.installer);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -63,11 +70,11 @@ export default function NewRouterPage() {
   function download() {
     if (!result) return;
     const shortname = result.nas?.shortname ?? result.router.name.toLowerCase();
-    const blob = new Blob([result.routeros_script], { type: "text/plain" });
+    const blob = new Blob([result.installer], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${shortname}.rsc`;
+    a.download = `${shortname}-netpid-installer.rsc`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -97,9 +104,23 @@ export default function NewRouterPage() {
           </div>
         )}
 
+        {result.installer_missing?.length > 0 && (
+          <div className="card mt-4 border-amber-400 bg-amber-50">
+            <h2 className="font-bold text-amber-900">Fill these in before the script runs</h2>
+            <p className="hint mb-2 text-amber-900">
+              These are YOUR site values. NETPID will not invent a subnet, so the
+              script ships with them blank and stops on the router if any is still
+              empty.
+            </p>
+            <ul className="list-disc pl-5 font-mono text-xs text-amber-900">
+              {result.installer_missing.map((m) => <li key={m}>{m}</li>)}
+            </ul>
+          </div>
+        )}
+
         <div className="card mt-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-bold">RouterOS script</h2>
+            <h2 className="font-bold">NETPID router installer (RouterOS 7)</h2>
             <div className="flex gap-2">
               <button className="btn-ghost btn-sm" onClick={copyScript}>
                 {copied ? "Copied ✓" : "Copy script"}
@@ -108,10 +129,13 @@ export default function NewRouterPage() {
             </div>
           </div>
           <p className="hint mb-3">
-            In RouterOS: open <em>Files</em> and drop the .rsc in, or paste each line into{" "}
-            <em>Terminal</em>.
+            The complete router: preflight, identity, clock, DNS/NTP, WAN, LAN
+            bridge and addressing, DHCP, NAT, firewall, RADIUS with accounting and
+            CoA, HotSpot, PPPoE, WireGuard management, and a restricted RouterOS
+            API. Idempotent &mdash; safe to re-run. In RouterOS: open{" "}
+            <em>Files</em> and drop the .rsc in, or paste into <em>Terminal</em>.
           </p>
-          <pre className="code-block rsc max-h-96 whitespace-pre">{result.routeros_script}</pre>
+          <pre className="code-block rsc max-h-96 whitespace-pre">{result.installer}</pre>
         </div>
 
         <div className="mt-6 flex flex-wrap gap-2">

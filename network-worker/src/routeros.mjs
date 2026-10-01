@@ -101,6 +101,13 @@ export function rosPaths(version) {
  * @returns {string} RouterOS CLI, one command per line.
  */
 export function buildRouterosSetup(o = {}) {
+  if (o.radiusOnly !== true) {
+    throw new Error(
+      "buildRouterosSetup() is the RADIUS/PPP-only script and does not configure "
+      + "LAN, DHCP, NAT, firewall, HotSpot or PPPoE. For router provisioning use "
+      + "buildRouterosInstaller() from ./installer.mjs.",
+    );
+  }
   const shortname = rosName(o.shortname, "netpid-nas");
   const server = rosQuote(o.radiusServer ?? "");
   const secret = rosQuote(o.secret ?? "");

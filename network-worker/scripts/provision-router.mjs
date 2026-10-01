@@ -254,6 +254,11 @@ async function main() {
     }
     const r = await provisionRouter(sb, isp.id, spec, opts);
     const script = buildRouterosSetup({
+    // The only sanctioned non-repair caller. This CLI writes a .rsc for an
+    // operator to inspect, and the RADIUS/PPP-only generator is what it has
+    // always used here. Router provisioning goes through
+    // buildRouterosInstaller() in src/installer.mjs.
+    radiusOnly: true,
       shortname: r.shortname,
       radiusServer: spec.radius_server ?? r.router.radius_server_host ?? "<RADIUS_SERVER_IP>",
       secret: r.secretOnce ?? "<no NAS — set with --no-nas off>",

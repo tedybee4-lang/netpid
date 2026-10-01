@@ -91,7 +91,11 @@ export default function FixTool({
   function generate() {
     if (!chosen) return;
     setBusy(true);
+    // The ONLY sanctioned caller of the RADIUS/PPP-only script. This tool
+    // deliberately re-applies just the authentication plane to a router whose
+    // RADIUS is broken; it is not a provisioner and must not be used as one.
     setScript(buildRouterosSetup({
+      radiusOnly: true,
       shortname: `fix-${chosen.name}`,
       identity: chosen.name,
       // Fall back to 7: a 7.14+ box is the common case and the generated

@@ -89,6 +89,8 @@ export interface ScriptProfile {
 }
 
 export interface ScriptOptions {
+  /** Required opt-in for buildRouterosSetup, the RADIUS/PPP-only script. */
+  radiusOnly?: boolean;
   shortname?: string;
   radiusServer?: string;
   secret?: string;
@@ -110,11 +112,33 @@ export interface ScriptOptions {
 }
 
 /**
- * Full "point this router at NETPID" script. Everything the operator would
- * otherwise have to type is derived from the options, so a router onboarded by
- * name and one onboarded by hand end up configured identically.
+ * RADIUS/PPP-only script. NOT a router provisioner.
+ *
+ * This emits the old short script: identity, clock, DNS, NTP, the RouterOS API
+ * service and user, /radius, /ppp/aaa, /radius incoming, and a verification
+ * printout. It configures NO LAN, NO DHCP, NO DNS forwarding for clients, NO
+ * NAT, NO firewall, NO HotSpot and NO PPPoE server.
+ *
+ * It stayed reachable after buildRouterosInstaller() landed, and the dashboard
+ * kept rendering it, so operators were handed the short script and believed
+ * the router was provisioned. It is now opt-in: a caller must say
+ * `radiusOnly: true` to get it, so it cannot be reached by accident and cannot
+ * be mistaken for the full installer.
+ *
+ * Use buildRouterosInstaller() (lib/routeros-installer.ts) to provision a
+ * router. The only legitimate remaining caller is the repair tool, which
+ * deliberately re-applies the authentication plane to a router whose RADIUS
+ * is broken.
  */
 export function buildRouterosSetup(o: ScriptOptions = {}): string {
+  if (o.radiusOnly !== true) {
+    throw new Error(
+      "buildRouterosSetup() is the RADIUS/PPP-only script and does not "
+      + "configure LAN, DHCP, NAT, firewall, HotSpot or PPPoE. It is kept only "
+      + "for the repair tool. For router provisioning use "
+      + "buildRouterosInstaller() from @/lib/routeros-installer.",
+    );
+  }
   const shortname = rosName(o.shortname, "netpid-nas");
   const server = rosQuote(o.radiusServer ?? "");
   const secret = rosQuote(o.secret ?? "");
@@ -282,10 +306,14 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
 }
 
 /** Both scripts for one router, so the operator picks the one that matches. */
+/** Both RADIUS/PPP-only scripts for one router. DEPRECATED for provisioning:
+ *  this is the short script, not the router. Kept only for the worker CLI
+ *  (scripts/provision-router.mjs), which writes a .rsc for an operator to
+ *  inspect. Router provisioning must use buildRouterosInstaller(). */
 export function buildRouterosScripts(o: ScriptOptions = {}): { v6: string; v7: string } {
   return {
-    v6: buildRouterosSetup({ ...o, rosVersion: "6" }),
-    v7: buildRouterosSetup({ ...o, rosVersion: "7" }),
+    v6: buildRouterosSetup({ ...o, radiusOnly: true, rosVersion: "6" }),
+    v7: buildRouterosSetup({ ...o, radiusOnly: true, rosVersion: "7" }),
   };
 }
 

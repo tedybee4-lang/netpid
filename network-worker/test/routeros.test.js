@@ -31,6 +31,7 @@ test("a colon in a value is quoted, or the router aborts the line", () => {
 
 test("the RADIUS server line survives a paste on a v7 router", () => {
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "TEVENN", radiusServer: "87.76.137.72", secret: "s3cr3t", rosVersion: "7",
   });
 
@@ -53,6 +54,7 @@ test("the RADIUS server line survives a paste on a v7 router", () => {
 
 test("v6 still uses the v6 RADIUS path, because 6.x has no top-level /radius", () => {
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "core", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6",
   });
   assert.match(s, /\/ip radius add service=ppp,hotspot/);
@@ -63,6 +65,7 @@ test("CoA needs a firewall rule, or disconnect from the dashboard does nothing",
   // accept=yes alone leaves the listener behind the default input policy, so
   // every Disconnect-Request is dropped before it is parsed.
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "TEVENN", radiusServer: "87.76.137.72", secret: "s3cr3t",
     rosVersion: "7", routerIp: "10.10.10.2",
   });
@@ -77,11 +80,13 @@ test("a section with nothing to configure is not announced", () => {
   // With no hotspot profiles the old script printed the header and no commands,
   // which reads as "this half failed" on a terminal.
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7",
   });
   assert.doesNotMatch(s, /5\. HotSpot/);
 
   const withHotspot = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7",
     profiles: [{ name: "hs", kind: "hotspot", download_kbps: 5000, upload_kbps: 1000 }],
   });
@@ -90,10 +95,10 @@ test("a section with nothing to configure is not announced", () => {
 });
 
 test("verify block uses paths that exist on the target version", () => {
-  const v7 = buildRouterosSetup({ shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7" });
+  const v7 = buildRouterosSetup({ radiusOnly: true, shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7" });
   assert.match(v7, /^\/radius print$/m);
   assert.doesNotMatch(v7, /^\/ip\/radius print$/m);
-  const v6 = buildRouterosSetup({ shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6" });
+  const v6 = buildRouterosSetup({ radiusOnly: true, shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6" });
   assert.match(v6, /^\/ip radius print$/m);
 });
 
@@ -104,6 +109,7 @@ test("/radius incoming is a settings singleton and takes no comment", () => {
   // are accept, port and vrf.
   for (const v of ["6", "7"]) {
     const s = buildRouterosSetup({
+    radiusOnly: true,
       shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: v,
     });
     assert.match(s, /^\/radius incoming set accept=yes port=3799$/m);
@@ -150,12 +156,12 @@ test("normalizeRosVersion accepts the shapes an operator actually types", () => 
 test("v6 and v7 use the correct radio menu and interface name", () => {
   const opts = { shortname: "core", radiusServer: "10.0.0.5", secret: "x", wifiSsid: "Lipanet" };
 
-  const v6 = buildRouterosSetup({ ...opts, rosVersion: "6" });
+  const v6 = buildRouterosSetup({ radiusOnly: true, ...opts, rosVersion: "6" });
   assert.match(v6, /RouterOS 6/);
   assert.match(v6, /\/interface wireless set \[find name=wlan1\]/);
   assert.doesNotMatch(v6, /\/interface wifi /, "v6 has no /interface/wifi menu");
 
-  const v7 = buildRouterosSetup({ ...opts, rosVersion: "7" });
+  const v7 = buildRouterosSetup({ radiusOnly: true, ...opts, rosVersion: "7" });
   assert.match(v7, /RouterOS 7/);
   assert.match(v7, /\/interface wifi set \[find name=wifi1\]/);
   assert.doesNotMatch(v7, /\/interface wireless set/,
@@ -165,14 +171,14 @@ test("v6 and v7 use the correct radio menu and interface name", () => {
 test("HotSpot cookie hardening is v7-only", () => {
   const base = { shortname: "core", radiusServer: "10.0.0.5", secret: "x",
     profiles: [{ name: "hs", kind: "hotspot", download_kbps: 5000, upload_kbps: 1000 }] };
-  assert.match(buildRouterosSetup({ ...base, rosVersion: "7" }), /http-cookie-httponly=yes/);
-  assert.doesNotMatch(buildRouterosSetup({ ...base, rosVersion: "6" }), /http-cookie-httponly/,
+  assert.match(buildRouterosSetup({ radiusOnly: true, ...base, rosVersion: "7" }), /http-cookie-httponly=yes/);
+  assert.doesNotMatch(buildRouterosSetup({ radiusOnly: true, ...base, rosVersion: "6" }), /http-cookie-httponly/,
     "6.x refuses this property — emitting it would abort the paste");
 });
 
 test("both versions open the API and set identity, clock, DNS and NTP", () => {
   for (const v of ["6", "7"]) {
-    const s = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5",
+    const s = buildRouterosSetup({ radiusOnly: true, shortname: "core", radiusServer: "10.0.0.5",
       secret: "x", identity: "Nairobi Core", rosVersion: v });
     assert.match(s, /\/system identity set name="Nairobi Core"/);
     assert.match(s, /\/system clock set time-zone-name=Africa\/Nairobi/);
@@ -184,9 +190,9 @@ test("both versions open the API and set identity, clock, DNS and NTP", () => {
 });
 
 test("an SSID is only touched when the ISP supplied one", () => {
-  const no = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5", secret: "x" });
+  const no = buildRouterosSetup({ radiusOnly: true, shortname: "core", radiusServer: "10.0.0.5", secret: "x" });
   assert.doesNotMatch(no, /mode=ap-bridge/, "never guess at a bridge layout");
-  const yes = buildRouterosSetup({ shortname: "core", radiusServer: "10.0.0.5",
+  const yes = buildRouterosSetup({ radiusOnly: true, shortname: "core", radiusServer: "10.0.0.5",
     secret: "x", wifiSsid: "Lipanet" });
   assert.match(yes, /mode=ap-bridge country=Kenya/);
 });
@@ -232,6 +238,7 @@ test("names are sanitised for RouterOS and never empty", () => {
 
 test("setup script wires RADIUS, PPPoE, HotSpot and CoA", () => {
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "nairobi-core-1",
     radiusServer: "10.0.0.5",
     secret: "s3cr3t",
@@ -250,6 +257,7 @@ test("setup script wires RADIUS, PPPoE, HotSpot and CoA", () => {
 
 test("profile queues carry the same upload/download pair as RADIUS", () => {
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "core", radiusServer: "10.0.0.5", secret: "x",
     profiles: [
       { name: "pppoe-20m", kind: "pppoe", pool: "10.10.0.2-10.10.0.254",
@@ -264,6 +272,7 @@ test("profile queues carry the same upload/download pair as RADIUS", () => {
 
 test("a profile with no cap produces no queue line", () => {
   const s = buildRouterosSetup({
+    radiusOnly: true,
     shortname: "core", radiusServer: "10.0.0.5", secret: "x",
     profiles: [{ name: "uncapped", kind: "pppoe", download_kbps: 0, upload_kbps: 0 }],
   });

@@ -12,7 +12,7 @@ import { createRouterSchema } from "@/lib/validation";
 // properties, the unquoted-colon quoting bug and an invalid "comment" on
 // /radius incoming. Every one of those was found by a real hAP lite rejecting
 // the pasted script, not by review. One builder, imported, cannot drift.
-import { buildRouterosSetup } from "@/lib/routeros";
+import { buildRouterosInstaller, installerMissing } from "@/lib/routeros-installer";
 
 
 // GET /api/routers — list (passwords never returned)
@@ -78,19 +78,30 @@ export async function POST(req: Request) {
     detail: { shortname: nasShort, nas_created: Boolean(nas) },
   });
 
-  // A ready-to-paste RouterOS script. The secret appears in it, so it is
-  // returned exactly once, in the same response as the secret itself.
-  const routeros_script = buildRouterosSetup({
-    shortname: nasShort,
-    radiusServer: d.radius_server ?? "<RADIUS_SERVER_IP>",
-    secret: secretOnce ?? "<no NAS registered for this router>",
-    routerIp: d.host,
+  // The full NETPID installer. It replaced the RADIUS/PPP-only script this
+  // route used to return, which configured no LAN, DHCP, NAT, firewall,
+  // HotSpot or PPPoE and left the router looking provisioned when it was not.
+  //
+  // strict:false is deliberate. An ISP that has not recorded its site networks
+  // yet is the normal case, and refusing to create the router over it would
+  // make the form unusable. Unset values ship blank, installer_missing names
+  // them, and the script's own preflight stops on the router.
+  const installerOpts = {
+    mode: "EXISTING" as const,
     identity: d.name,
-    profiles: Array.isArray(d.profiles) ? d.profiles : [],
-  });
+    wan: "ether1",
+    lanSubnet: "",
+    lanGateway: "",
+    dhcpPool: "",
+    radiusServer: d.radius_server ?? "",
+    radiusSecret: secretOnce ?? "",
+    nasShortname: nasShort,
+  };
 
   return NextResponse.json({
-    router, nas, secret_once: secretOnce, routeros_script,
+    router, nas, secret_once: secretOnce,
+    installer: buildRouterosInstaller(installerOpts, { strict: false }),
+    installer_missing: installerMissing(installerOpts),
     warning: secretOnce
       ? "Copy the RADIUS secret now — it is never shown again."
       : null,
