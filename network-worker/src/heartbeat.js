@@ -12,8 +12,23 @@ import os from "os";
 import crypto from "crypto";
 import { execSync } from "child_process";
 
-const HEARTBEAT_URL =
-  process.env.NETPID_HEARTBEAT_URL ?? "https://netpid.vercel.app/api/worker/heartbeat";
+// The heartbeat destination is REQUIRED, never defaulted.
+//
+// A hardcoded production fallback is the exact failure this codebase already
+// refuses to accept elsewhere: a worker with no NETPID_HEARTBEAT_URL configured
+// would silently post live metrics to production, where the Super Admin console
+// shows a healthy box that nobody is actually operating. Failing loudly at
+// startup is the only safe answer, because a missing env var is a config
+// mistake and config mistakes should be visible rather than defaulted away.
+const HEARTBEAT_URL = process.env.NETPID_HEARTBEAT_URL;
+if (!HEARTBEAT_URL) {
+  throw new Error(
+    "NETPID_HEARTBEAT_URL is not set. Point it at the stable production host, "
+    + "e.g. https://<deployment-host>/api/worker/heartbeat. See "
+    + "network-worker/scripts/PROVISIONING-ENV.md. Refusing to guess: a wrong "
+    + "default reports a box as online against the wrong deployment.",
+  );
+}
 const SECRET = process.env.WORKER_HEARTBEAT_SECRET;
 const SERVER_ID = process.env.NETPID_SERVER_ID;
 const INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 45_000);

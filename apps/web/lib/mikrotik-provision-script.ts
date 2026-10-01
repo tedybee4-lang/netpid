@@ -147,13 +147,16 @@ export function buildBootstrapScript(opts: {
   params.forEach(([k, v], i) => {
     // npS is a per-field scratch buffer: split on space, rejoin with "+".
     p(`:local npS ""`);
+    // npW is scoped to this :foreach and DOES NOT EXIST AFTER IT CLOSES.
+    // Assigning to it outside the loop is a syntax error at the variable name,
+    // which is a line and column with no explanation - the third field
+    // failure of this kind, so it is worth stating plainly.
     p(`:foreach npW in=[:split $${v} " "] do={`);
     p(`  :if ([:len $npS] > 0) do={ :set npS ($npS . "+") }`);
     p(`  :set npS ($npS . $npW)`);
     p(`}`);
     p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $npS)`);
     p(`:set npS ""`);
-    p(`:set npW ""`);
   });
   p("");
   p(":do {");

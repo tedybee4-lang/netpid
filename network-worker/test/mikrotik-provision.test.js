@@ -186,27 +186,54 @@ test("no other migration installs a trigger on a column it did not declare", () 
 // ---------------------------------------------------------------------------
 // Management
 // ---------------------------------------------------------------------------
-test("every :set target is declared with :local before it is set", () => {
-  // THE FIELD FAILURE. RouterOS rejects `:set x ...` when `x` was never
-  // declared with `:local`, and the error points at the variable name:
+test("every :set target is declared with :local and still in scope", () => {
+  // THREE field failures, all the same shape, all reported as a bare
+  // "syntax error (line N column 6)" with column 6 being the variable name:
   //
-  //   Script Error: syntax error (line 65 column 6)
+  //   1. npUrl had no :local at all, after a refactor turned
+  //      `:local npUrl (...)` into `:set npUrl "..."`.
+  //   2. npQ was a leftover that no longer existed anywhere.
+  //   3. npW is a :foreach loop variable. It EXISTS INSIDE the loop and is
+  //      GONE AFTERWARDS. `:set npW ""` below the loop is a syntax error.
   //
-  // which reads as if the URL were malformed. It was not: npUrl simply had no
-  // :local, because an earlier fix turned `:local npUrl (...)` into
-  // `:set npUrl "..."` and dropped the declaration along with the parentheses.
+  // So the rule is not "declared somewhere". It is "declared with :local and
+  // not scoped to a loop that has already closed".
   for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
-    // A :foreach loop variable is declared by the loop itself, so it counts.
-    const declared = new Set([
-      ...[...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
-      ...[...s.matchAll(/:foreach\s+(\w+)\s+in=/g)].map((m) => m[1]),
-    ]);
-    for (const [n, raw] of s.split("\n").entries()) {
+    // Only :local declarations count. A :foreach variable is deliberately
+    // excluded: accepting it here is what let bug 3 through twice.
+    const local = new Set([...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]));
+    const lines = s.split("\n");
+
+    // Line numbers where a :foreach block closes, so we know when a loop
+    // variable is out of scope.
+    const depth = [];
+    let d = 0;
+    for (const raw of lines) {
+      const t = raw.replace(/(^|\s)#.*$/, "");
+      const before = d;
+      d += (t.match(/\{/g) ?? []).length - (t.match(/\}/g) ?? []).length;
+      depth.push({ before, after: d });
+    }
+    assert.equal(d, 0, `${label}: unbalanced braces`);
+
+    for (const [i, raw] of lines.entries()) {
       const t = raw.replace(/(^|\s)#.*$/, "").trim();
       const m = /^:set\s+(\w+)\s/.exec(t);
       if (!m) continue;
-      assert.ok(declared.has(m[1]),
-        `${label} line ${n + 1} sets ${m[1]}, which is never declared: ${t.slice(0, 50)}`);
+      const name = m[1];
+      // A :foreach variable, and the :set that wrongly targets it.
+      const loopVars = new Set(
+        [...s.matchAll(/:foreach\s+(\w+)\s+in=/g)].map((x) => x[1]),
+      );
+      if (loopVars.has(name)) {
+        // Legal only INSIDE the loop, i.e. at a brace depth greater than the
+        // loop's own baseline. Outside it, the variable does not exist.
+        assert.ok(depth[i].before > 0,
+          `${label} line ${i + 1} assigns to the :foreach variable ${name}, which is out of scope: ${t.slice(0, 40)}`);
+        continue;
+      }
+      assert.ok(local.has(name),
+        `${label} line ${i + 1} sets ${name}, which is never declared: ${t.slice(0, 50)}`);
     }
   }
 });
@@ -416,9 +443,10 @@ test("a Vercel PREVIEW host is refused for the heartbeat and reported", () => {
 });
 
 test("the production host is named explicitly, never guessed from its shape", () => {
-  // netpid.vercel.app and a preview are indistinguishable by shape, so the
-  // apex is refused unless it is listed. Documented so nobody "simplifies" it
-  // back into a guess that silently bakes a dead URL into a router.
+  // A Vercel apex and a preview deployment are indistinguishable by shape, so
+  // the apex is refused unless it is listed in NETPID_STABLE_HOSTS. Documented
+  // so nobody "simplifies" it back into a guess that silently bakes a dead URL
+  // into a router.
   const src = read("../../apps/web/lib/mikrotik-provision.ts");
   assert.match(src, /NETPID_STABLE_HOSTS/);
   assert.ok(!src.includes("return left.length > 0"),

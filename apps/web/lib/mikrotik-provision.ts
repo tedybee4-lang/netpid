@@ -220,15 +220,15 @@ function isPrivateHost(h: string): boolean {
 /**
  * Is this a throwaway deployment?
  *
- * The field paste used netpid-2b9dmps30-malariachrome-7756s-projects.vercel.app.
- * A Vercel PREVIEW host is a subdomain of vercel.app, deleted when its branch is
- * merged or closed. The configure script installs a heartbeat scheduler pointing
- * at whatever host served the request, so baking one in leaves a router
- * reporting to a URL that 404s forever with nothing in the dashboard to say why.
+ * A field paste used a Vercel PREVIEW host, a subdomain of vercel.app, which is
+ * deleted when its branch is merged or closed. The configure script installs a
+ * heartbeat scheduler pointing at whatever host served the request, so baking
+ * one in leaves a router reporting to a URL that 404s forever with nothing in
+ * the dashboard to say why.
  *
- * The production apex host is netpid.vercel.app with NO subdomain, so
- * "is a vercel.app subdomain" is the test. A bare vercel.app, a custom domain,
- * and any other public host are stable.
+ * A Vercel apex host has NO subdomain, so "is a vercel.app subdomain" is the
+ * test. A bare vercel.app, a custom domain, and any other public host are
+ * stable. The production apex is not named here on purpose: see STABLE_HOSTS.
  */
 /**
  * Hosts that are always treated as production, even though the generic rules
@@ -236,11 +236,15 @@ function isPrivateHost(h: string): boolean {
  *
  * GUESSING IS NOT SAFE IN EITHER DIRECTION, SO DO NOT GUESS.
  *
- * A Vercel apex such as netpid.vercel.app is indistinguishable from a preview by
- * shape alone. Guessing permissively bakes a deleted deployment into a router;
- * guessing strictly omits the heartbeat. Neither is acceptable, so the
- * production host is named explicitly and everything else on vercel.app is
+ * A Vercel apex is indistinguishable from a preview by shape alone. Guessing
+ * permissively bakes a deleted deployment into a router; guessing strictly
+ * omits the heartbeat. Neither is acceptable, so the production host is named
+ * explicitly via NETPID_STABLE_HOSTS and everything else on vercel.app is
  * treated as throwaway.
+ *
+ * The host is deliberately not written into this file. Pinning it here would let
+ * a rename or a domain change leave a stale callback baked into live routers
+ * with no compile-time signal.
  *
  * Steps 4 and 5: set the variable in the Vercel PRODUCTION environment only, then
  * REDEPLOY. It must be absent from Preview on purpose, so a preview deployment can
