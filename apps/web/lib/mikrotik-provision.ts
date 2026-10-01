@@ -354,9 +354,18 @@ export function validateSelection(
   } else if (!known.has(wan)) {
     warnings.push(`${wan} was not in the detected interface list.`);
   } else if (known.get(wan)!.in_bridge) {
-    // A port enslaved to a bridge cannot also be routed as the WAN: the bridge
-    // owns its addressing and the port becomes a LAN member.
-    errors.push(`${wan} is a port of bridge ${known.get(wan)!.in_bridge}, so it cannot also be the WAN.`);
+    // A WARNING, not an error, and this is the single most important rule in the
+    // file.
+    //
+    // A stock MikroTik puts every LAN port in its default bridge, so on an
+    // unconfigured board EVERY ethernet port is a bridge member. Rejecting them
+    // all means this product can never provision a router as MikroTik ships it,
+    // which is the overwhelmingly common case.
+    //
+    // The operator naming a port is the decision. The script releases that one
+    // port from its bridge before adding the DHCP client, so the WAN ends up
+    // routed, and every other bridge member is left alone so the LAN survives.
+    warnings.push(`${wan} is in bridge ${known.get(wan)!.in_bridge}; it will be released from that bridge and used as the WAN.`);
   }
 
   const hotspot = (input.hotspot_interfaces ?? []).map((s) => s.trim()).filter(Boolean);
@@ -492,7 +501,12 @@ export function buildDetectedInterfaces(
         name,
         type,
         in_bridge: inBridge,
-        is_candidate_wan: type === "ethernet" && inBridge === null,
+        // Every ethernet port is a WAN candidate, INCLUDING one that is in a
+        // bridge. A stock MikroTik has all of them in the default bridge, so
+        // excluding them left the operator with an empty list and no way to
+        // provision the router they actually bought. The configure script
+        // releases the chosen port from its bridge before using it.
+        is_candidate_wan: type === "ethernet",
       };
     });
 }

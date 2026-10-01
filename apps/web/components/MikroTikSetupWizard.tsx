@@ -298,7 +298,9 @@ export default function MikroTikSetupWizard({
                   <input type="radio" name="np-wan" checked={wan === i.name}
                     onChange={() => setWan(i.name)} className="sr-only" />
                   <span className="font-mono font-semibold">{i.name}</span>
-                  {i.in_bridge && <span className="text-[10px] opacity-80">in {i.in_bridge}</span>}
+                  {i.in_bridge && (
+                    <span className="text-[10px] opacity-80">will leave {i.in_bridge}</span>
+                  )}
                 </label>
               ))}
             </div>

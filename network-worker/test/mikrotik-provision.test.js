@@ -536,14 +536,36 @@ test("bridges and their members are parsed from the router's report", () => {
   assert.deepEqual(parseBridges("garbage"), [], "a line with no colon is not a bridge");
 });
 
-test("a bridged port is never offered as the WAN", () => {
+test("a bridged ethernet port is still offered as the WAN", () => {
+  // A STOCK MIKROTIK PUTS EVERY LAN PORT IN ITS DEFAULT BRIDGE. Excluding
+  // bridged ports from the WAN list meant the hAP lite in the field reported
+  // ether1-4 all "in bridgeLocal", so the operator had nothing to pick, no WAN
+  // was auto-selected, and the configure call was refused for an empty
+  // wan_interface. The product could not provision a router as it ships.
+  //
+  // The chosen port is released from its bridge by the configure script, so
+  // offering it is safe. Wireless is still never a WAN: it cannot be routed.
   const bridges = parseBridges("bridge-lan:ether2,ether3,ether4");
   const ifaces = buildDetectedInterfaces("ether1,ether2,ether3,ether4,wlan1", bridges);
   const wan = ifaces.filter((i) => i.is_candidate_wan).map((i) => i.name);
-  assert.deepEqual(wan, ["ether1"], "only the free ethernet port can be the WAN");
-  assert.equal(ifaces.find((i) => i.name === "ether2").in_bridge, "bridge-lan");
-  // Wireless must never be offered as a WAN either.
+  assert.deepEqual(wan, ["ether1", "ether2", "ether3", "ether4"],
+    "every ethernet port is offered, bridged or not");
+  assert.equal(ifaces.find((i) => i.name === "ether2").in_bridge, "bridge-lan",
+    "the bridge membership is still reported so the UI can show it");
+  // Wireless must never be offered as a WAN.
   assert.ok(!ifaces.find((i) => i.name === "wlan1").is_candidate_wan);
+});
+
+test("the configure script releases the WAN from its bridge before adding DHCP", () => {
+  // Offering a bridged port is only safe because the script breaks the bridge
+  // membership first. If this is removed, the WAN comes up enslaved to a bridge
+  // with no address on it: a dead uplink and no error anywhere.
+  const idx = GEN.indexOf("/interface bridge port remove [find interface=");
+  assert.ok(idx > -1, "the WAN must be removed from its bridge");
+  const dhcp = GEN.indexOf("/interface dhcp-client add interface=");
+  assert.ok(dhcp > -1, "a DHCP client is added to the WAN");
+  assert.ok(idx < dhcp,
+    "the port must leave the bridge BEFORE the DHCP client is added, or the WAN is unroutable");
 });
 
 test("an empty interface report produces no interfaces, so the UI can say so", () => {
@@ -581,10 +603,19 @@ test("a port cannot serve HotSpot and PPPoE at once", () => {
   assert.ok(r.errors.some((e) => /in both HotSpot and PPPoE/.test(e)));
 });
 
-test("a port already in a bridge cannot be the WAN", () => {
+test("a bridged WAN is allowed and reported, not rejected", () => {
+  // Was: "a port already in a bridge cannot be the WAN", asserting r.ok is false.
+  // That rule made the product unusable on a stock router, where every LAN port
+  // is in the default bridge. A bridged port is now released by the script and
+  // the operator is told, which is the difference between a working WAN and a
+  // product that cannot provision the router it is sold for.
   const r = validateSelection({ mode: "HOTSPOT", wan_interface: "ether5", hotspot_interfaces: ["ether2"] }, DETECTED);
-  assert.ok(!r.ok);
-  assert.ok(r.errors.some((e) => /is a port of bridge bridge-lan/.test(e)));
+  assert.ok(r.ok, r.errors.join(" "));
+  assert.ok(r.warnings.some((w) => /ether5 is in bridge bridge-lan/.test(w)),
+    "the operator must be told the port will leave its bridge");
+  // The real hard rules are untouched.
+  assert.ok(!validateSelection({ mode: "HOTSPOT", wan_interface: "ether1", hotspot_interfaces: ["ether1"] }, DETECTED).ok,
+    "a port still cannot be both the WAN and a HotSpot port");
 });
 
 test("every mode demands its own ports", () => {
