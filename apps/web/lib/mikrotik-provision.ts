@@ -205,31 +205,68 @@ export function publicBaseUrl(): string {
 
 /** A private/LAN address a router on the same site could reach. */
 function isPrivateHost(h: string): boolean {
-  return h === "localhost"
-    || h.startsWith("127.")
-    || h.startsWith("10.")
-    || h.startsWith("192.168.")
-    || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    || h.endsWith(".local")
-    || h.endsWith(".internal");
+  const host = h.split(":")[0];           // drop the port: localhost:3000
+  return host === "localhost"
+    || host === "::1"
+    || host.startsWith("127.")
+    || host.startsWith("10.")
+    || host.startsWith("192.168.")
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    || host.endsWith(".local")
+    || host.endsWith(".internal")
+    || host.endsWith(".lan");
 }
 
 /**
  * Is this a throwaway deployment?
  *
- * The field paste used netpid-2b9dmps30-...-projects.vercel.app. A Vercel
- * preview host is deleted when its branch is deleted or merged, and the
- * configure script installs a heartbeat scheduler pointing at whatever host
- * served the request. Baking a preview host in leaves a router reporting to a
- * URL that 404s forever, with nothing in the dashboard to explain it.
+ * The field paste used netpid-2b9dmps30-malariachrome-7756s-projects.vercel.app.
+ * A Vercel PREVIEW host is a subdomain of vercel.app, deleted when its branch is
+ * merged or closed. The configure script installs a heartbeat scheduler pointing
+ * at whatever host served the request, so baking one in leaves a router
+ * reporting to a URL that 404s forever with nothing in the dashboard to say why.
+ *
+ * The production apex host is netpid.vercel.app with NO subdomain, so
+ * "is a vercel.app subdomain" is the test. A bare vercel.app, a custom domain,
+ * and any other public host are stable.
  */
+/**
+ * Hosts that are always treated as production, even though the generic rules
+ * below would flag them.
+ *
+ * A Vercel apex such as netpid.vercel.app is indistinguishable from a preview
+ * by SHAPE alone: both are "something.vercel.app". Guessing wrong in the
+ * permissive direction bakes a deleted deployment into a router, and guessing
+ * wrong in the strict direction silently omits the heartbeat. Neither is
+ * acceptable, so the production host is named explicitly and everything else on
+ * vercel.app is treated as throwaway.
+ */
+const STABLE_HOSTS = (process.env.NETPID_STABLE_HOSTS ?? "")
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
 export function isEphemeralHost(host: string): boolean {
-  const h = String(host ?? "").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const h = String(host ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
   if (!h) return true;
-  if (h.includes("vercel.app") && !h.endsWith("vercel.app")) return true;  // a *preview* subdomain
-  if (/\.preview\./.test(h)) return true;
-  if (h.includes("ngrok") || h.includes("trycloudflare") || h.includes("loca.lt")) return true;
-  return isPrivateHost(h);
+  const name = h.split(":")[0];
+
+  // Explicitly configured production hosts win over every heuristic.
+  if (STABLE_HOSTS.includes(name) || STABLE_HOSTS.includes(h)) return false;
+
+  // A Vercel PREVIEW host is "<project>-<hash>-<scope>.vercel.app". The apex
+  // looks the same, so anything on vercel.app that is not named above is
+  // assumed throwaway. That is the safe direction to be wrong in: it omits a
+  // heartbeat and says so, rather than pointing a router at a dead URL.
+  if (name.endsWith(".vercel.app")) return true;
+  if (/\.preview\./.test(name)) return true;
+  if (name.includes("ngrok") || name.includes("trycloudflare") || name.endsWith(".loca.lt")) return true;
+  if (isPrivateHost(h)) return true;
+  return false;
 }
 
 /**

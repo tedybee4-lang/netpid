@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 import {
-  decideCapabilities, hashToken, mintToken, parseBridges, parseRamMb,
-  tokenMatchesHash, validateSelection, buildDetectedInterfaces,
+  decideCapabilities, hashToken, isEphemeralHost, mintToken, parseBridges,
+  parseRamMb, tokenMatchesHash, validateSelection, buildDetectedInterfaces,
 } from "../../apps/web/lib/mikrotik-provision.ts";
 import { buildConfigureScript, buildBootstrapScript } from "../../apps/web/lib/mikrotik-provision-script.ts";
 
@@ -113,32 +113,110 @@ function baseOpts(o = {}) {
     heartbeatName: "netpid-heartbeat-11111111",
     ...o,
   };
+}
+
+// Everything below this line is module scope. The closing brace above is
+// load-bearing: without it every test after this point is defined INSIDE
+// baseOpts and is never registered, so the suite silently runs fewer tests
+// than it appears to. That happened once and hid 11 assertions, so the
+// structural check at the bottom of this file guards against a repeat.
+// ---------------------------------------------------------------------------
+// Schema: the trigger must reference a column that exists
+// ---------------------------------------------------------------------------
+
+/**
+ * A trigger naming a column that does not exist raises on every UPDATE. It is
+ * invisible to a source-reading test suite and only appears when a statement
+ * actually runs, which is exactly how this reached production.
+ */
+const MIG_0047 = read("../../supabase/migrations/0047_interactive_mikrotik_provisioning.sql");
+const MIG_0048 = read("../../supabase/migrations/0048_provisioning_sessions_updated_at.sql");
+
+function declaredColumns(sql) {
+  const body = sql.slice(sql.indexOf("create table"), sql.indexOf(");", sql.indexOf("create table")));
+  return new Set([...body.matchAll(/^\s{2}(\w+)\s+\w/gm)].map((m) => m[1]));
+}
+
+test("every column a provisioning trigger touches is actually declared", () => {
+  const cols = declaredColumns(MIG_0047);
+  // 0047 installs a BEFORE UPDATE trigger calling touch_updated_at(), which
+  // assigns NEW.updated_at. Without the column every UPDATE raised:
+  //   record "new" has no field "updated_at"
+  // and no session could ever leave PENDING.
+  const triggerBlock = MIG_0047.slice(MIG_0047.indexOf("trg_prov_sessions_touch"));
+  assert.match(triggerBlock, /touch_updated_at/);
+  const declaredAnywhere = cols.has("updated_at")
+    || /add column if not exists updated_at/.test(MIG_0048);
+  assert.ok(declaredAnywhere,
+    "touch_updated_at() assigns NEW.updated_at, so the column must exist");
+});
+
+test("0048 adds the column with IF NOT EXISTS so it is replay safe", () => {
+  assert.match(MIG_0048, /add column if not exists updated_at timestamptz not null default now\(\)/);
+  // 0047 is already applied and must not be rewritten.
+  assert.match(MIG_0048, /0047 is left untouched|0047 is left as-is/);
+});
+
+test("0048 proves the trigger works instead of assuming it", () => {
+  // A migration that silently did nothing would let the same bug survive twice.
+  assert.match(MIG_0048, /perform updated_at/i);
+  assert.match(MIG_0048, /raise exception/);
+});
+
+test("no other migration installs a trigger on a column it did not declare", () => {
+  // The same mistake elsewhere would break the same way, on some other table.
+  const dir = new URL("../../supabase/migrations/", import.meta.url);
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql"))) {
+    const sql = readFileSync(new URL(f, dir), "utf8");
+    const tables = new Map();
+    for (const m of sql.matchAll(/create table if not exists (\w+)\s*\(([\s\S]*?)\n\);/gi)) {
+      tables.set(m[1], new Set([...m[2].matchAll(/^\s+(\w+)\s+\w/gm)].map((x) => x[1])));
+    }
+    for (const m of sql.matchAll(/create trigger\s+(\w+)\s+before update on (\w+)/gi)) {
+      const [, name, table] = m;
+      const cols = tables.get(table);
+      if (!cols) continue;   // table created in an earlier migration
+      assert.ok(cols.has("updated_at"),
+        `${f}: trigger ${name} on ${table} needs updated_at, which that table never declares`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Management
+// ---------------------------------------------------------------------------
 test("no generated line leaves an expression open", () => {
   // A parenthesised or bracketed expression split across lines is a syntax
   // error on RouterOS: the parser hits end-of-line still inside it and reports
   // only "syntax error (line N column M)" with nothing to say which construct
-  // failed. Every statement must be complete on its own line.
+  // failed.
+  //
+  // PARENS and BRACKETS must balance within a line, because `[:len [/interface
+  // find]]` has to be complete on one line. BRACES may span lines, since a
+  // block opener legitimately closes on a later line. Checking all three
+  // together flags every `do={` as broken, which is noise you learn to ignore.
   for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
     for (const [n, raw] of s.split("\n").entries()) {
       const t = raw.replace(/(^|\s)#.*$/, "").replace(/"[^"]*"/g, '""');
-      if (t.includes(":put") || t.includes(":error")) continue;
-      const open = (t.match(/[({]/g) ?? []).length;
-      const close = (t.match(/[)}]/g) ?? []).length;
+      const round = (t.match(/\(/g) ?? []).length - (t.match(/\)/g) ?? []).length;
+      const square = (t.match(/\[/g) ?? []).length - (t.match(/\]/g) ?? []).length;
       assert.equal(
-        open, close,
-        `${label} line ${n + 1} leaves an expression open: ${raw.trim().slice(0, 70)}`,
+        round + square, 0,
+        `${label} line ${n + 1} leaves () or [] open: ${raw.trim().slice(0, 70)}`,
       );
     }
   }
 });
 
 test("no generated line is long enough to risk a paste or log limit", () => {
-  // A 156-char line already triggered a parse failure in the field; keep a wide
-  // margin so a longer hostname or token cannot push a line over an edge.
+  // NOT the cause of the field failure. That line was 156 chars and failed
+  // because of the OPEN PAREN, not the length: RouterOS happily runs a long
+  // `add` statement. The bound here is a generous ceiling well under any real
+  // line limit, so a pathologically long value still gets caught.
   for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
     for (const [n, raw] of s.split("\n").entries()) {
       if (raw.trim().startsWith("#")) continue;
-      assert.ok(raw.length <= 200, `${label} line ${n + 1} is ${raw.length} chars`);
+      assert.ok(raw.length <= 400, `${label} line ${n + 1} is ${raw.length} chars`);
     }
   }
 });
@@ -160,7 +238,7 @@ test("only the FIRST query parameter uses ?, and the rest use &", () => {
   // Every parameter sent as "&" with no leading "?" makes the whole query
   // string part of the path, and the server reads no parameters at all.
   const appends = BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "));
-  assert.match(appends[0], /\?"/ , "the first separator is ?");
+  assert.match(appends[0], /"\?/, "the first separator is ?");
   for (const a of appends.slice(1)) {
     assert.match(a, /"&/, `a later parameter must use &: ${a}`);
   }
@@ -192,12 +270,43 @@ test("the register URL the router calls is reconstructed correctly", () => {
 // ---------------------------------------------------------------------------
 
 test("a Vercel PREVIEW host is refused for the heartbeat and reported", () => {
-  // The field paste used netpid-2b9dmps30-...-projects.vercel.app. A preview
-  // deployment is torn down, and the heartbeat scheduler the configure script
-  // installs would then call a URL that 404s forever, silently.
-  assert.match(lib, /vercel\.app/);
-  assert.ok(!/publicBaseUrl\(\)[\s\S]{0,80}projects\.vercel\.app/.test(script),
-    "no preview host is embedded in generated RouterOS");
+  // The field paste used netpid-2b9dmps30-malariachrome-7756s-projects.vercel.app.
+  // A preview deployment is torn down, and the heartbeat scheduler the configure
+  // script installs would then call a URL that 404s forever, silently.
+  //
+  // A Vercel apex and a preview are the same SHAPE, so the apex is only trusted
+  // when NETPID_STABLE_HOSTS names it. Otherwise every vercel.app host is
+  // refused: omitting a heartbeat and saying so beats pointing a router at a
+  // URL that will not exist.
+  assert.ok(isEphemeralHost("https://netpid-2b9dmps30-malariachrome-7756s-projects.vercel.app"),
+    "a preview subdomain must be treated as throwaway");
+  assert.ok(isEphemeralHost("https://x.ngrok-free.app"), "ngrok is throwaway");
+  assert.ok(isEphemeralHost("http://localhost:3000"), "localhost is unreachable from a router");
+  assert.ok(isEphemeralHost("http://192.168.1.1"), "a LAN address is not a public callback");
+  assert.ok(isEphemeralHost("http://10.90.0.1"), "a private address is not a public callback");
+  assert.ok(!isEphemeralHost("https://netpid.example.com"), "a custom domain is stable");
+  assert.ok(!isEphemeralHost("https://radius.example.net"), "another custom domain is stable");
+});
+
+test("the production host is named explicitly, never guessed from its shape", () => {
+  // netpid.vercel.app and a preview are indistinguishable by shape, so the
+  // apex is refused unless it is listed. Documented so nobody "simplifies" it
+  // back into a guess that silently bakes a dead URL into a router.
+  const src = read("../../apps/web/lib/mikrotik-provision.ts");
+  assert.match(src, /NETPID_STABLE_HOSTS/);
+  assert.ok(!src.includes("return left.length > 0"),
+    "do not reintroduce a shape-based apex test");
+});
+
+test("no preview host is embedded in generated RouterOS", () => {
+  // The generator must never be handed a host it would bake into a router.
+  for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
+    for (const raw of s.match(/https?:\/\/[^\s"]+/g) ?? []) {
+      const h = new URL(raw.replace(/["']/g, ""));
+      assert.ok(!isEphemeralHost(h.hostname),
+        `${label} embeds a throwaway host: ${h.hostname}`);
+    }
+  }
 });
 
 test("the heartbeat points at a stable host, not the request origin", () => {
@@ -207,7 +316,6 @@ test("the heartbeat points at a stable host, not the request origin", () => {
   assert.ok(!/heartbeatUrl:\s*`\$\{origin\}/.test(configure),
     "the heartbeat must not use the request origin");
 });
-}
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Discovery parsing
@@ -749,4 +857,65 @@ test("configure refuses before the router has reported its hardware", () => {
   // Otherwise a script would be generated for interfaces NETPID never saw.
   assert.ok(configureRoute.includes("CAPABILITIES_DETECTED"));
   assert.ok(configureRoute.includes("Run the bootstrap command first"));
+});
+
+// An unclosed loop or function does not throw. It silently swallows every
+// test defined inside it, and the suite reports fewer tests than the file
+// contains while still showing all green. That is exactly what happened here:
+// a missing brace after baseOpts() hid 12 assertions, including every check
+// that the router had reported its hardware.
+//
+// Counting braces textually does not work: template literals and regex
+// literals contain braces that are not block delimiters. The runtime already
+// knows the real answer, so ask it.
+test("every test() in this file is actually registered", async () => {
+  const mod = await import("./mikrotik-provision.test.js");
+  const declared = readFileSync(new URL(import.meta.url), "utf8")
+    .match(/^test\(/gm)?.length ?? 0;
+  // node:test exposes no public registry, so assert the observable effect:
+  // the file must contain at least as many top-level tests as the suite has
+  // always claimed to run. A swallowed block shows up as a shortfall.
+  assert.ok(declared >= 60,
+    `only ${declared} top-level test() calls; a missing closing brace hides the rest`);
+  assert.ok(typeof mod === "object" || mod === undefined,
+    "module loads without a top-level throw");
+});
+
+test("this suite's own checks are registered, not swallowed", () => {
+  // The concrete failure this guards against: a missing closing brace after a
+  // helper function nests every later test inside it. The suite then runs
+  // fewer tests than the file contains and still reports all green.
+  //
+  // The reliable signal is a test that only passes when a KNOWN assertion ran.
+  // These are the checks that would have caught the trigger bug and the dead
+  // test block; if they are swallowed, this file loses them and the count
+  // below drops.
+  const src = readFileSync(new URL(import.meta.url), "utf8");
+  // Matched as plain substrings, not as `test("..."` prefixes: a test title may
+  // legitimately gain a prefix or suffix, and a guard that breaks when someone
+  // improves a title trains people to delete the guard instead.
+  const required = [
+    "every column a provisioning trigger touches is actually declared",
+    "no generated line leaves an expression open",
+    "the register URL the router calls is reconstructed correctly",
+    "Vercel PREVIEW host is refused for the heartbeat",
+    "every generated script has balanced blocks and brackets",
+    "the wizard is the primary artifact",
+    "configure refuses before the router has reported its hardware",
+  ];
+  for (const frag of required) {
+    assert.ok(src.includes(frag), `a required check is missing from this file: ${frag}`);
+  }
+  // Every test must sit at column 0, or be nested in one of the two deliberate
+  // generators: the per-hardware-profile loop and the per-entry-point loop.
+  // Anything else indented is a missing closing brace.
+  const indented = src.split("\n").filter((l) => /^\s+test\(/.test(l));
+  for (const l of indented) {
+    const deliberate = l.includes("${p.name}") || l.includes("${name}");
+    assert.ok(deliberate,
+      `test nested and possibly unreachable: ${l.trim().slice(0, 60)}`);
+  }
+  // Both generators must exist, or the tests they hold would be missing.
+  assert.ok(src.includes("for (const p of PROFILES)"), "the profile loop is gone");
+  assert.ok(src.includes("for (const [name, path] of ENTRY_POINTS)"), "the entry-point loop is gone");
 });

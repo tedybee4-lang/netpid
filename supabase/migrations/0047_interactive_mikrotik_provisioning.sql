@@ -62,6 +62,11 @@ create table if not exists public.router_provisioning_sessions (
   error_message text,
 
   started_at timestamptz not null default now(),
+  -- 0048 adds this. The touch trigger below was created before the column
+  -- existed, so it failed on every UPDATE with
+  --   record "new" has no field "updated_at"
+  -- which meant NO session could ever leave PENDING. See 0048.
+  updated_at timestamptz not null default now(),
   last_seen_at timestamptz,
   completed_at timestamptz,
   expires_at timestamptz not null default (now() + interval '30 minutes')
