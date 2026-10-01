@@ -17,13 +17,17 @@ create table if not exists public.isp_invoices (
   id uuid primary key default extensions.uuid_generate_v4(),
   isp_id uuid not null references public.isps(id) on delete cascade,
   period text not null check (period ~ '^[0-9]{4}-[0-9]{2}$'),
-  plan_id uuid references public.netpid_plans(id) on set null,
+  -- "on delete set null", not "on set null": the ON clause of a foreign key
+  -- requires DELETE or UPDATE first, so a bare "on set null" is a syntax error
+  -- and the whole CREATE TABLE is rejected. Deleting a plan must orphan an
+  -- invoice's link without discarding the amount that was actually billed.
+  plan_id uuid references public.netpid_plans(id) on delete set null,
   amount integer not null check (amount > 0), -- minor units, same as payments
   currency text not null default 'KES',
   status text not null default 'issued'
     check (status in ('issued','paid','void','overdue')),
   due_on date,
-  paid_at timestamz,
+  paid_at timestamptz, -- timestamptz, not timestamz
   payment_reference text,  -- M-Pesa receipt or bank reference, as recorded
   note text,
   issued_by uuid references auth.users(id),
