@@ -43,6 +43,23 @@ type Defaults = {
 };
 
 export async function POST(req: Request) {
+  try {
+    return await addRouter(req);
+  } catch (e) {
+    // This route must ALWAYS answer with a JSON body. An uncaught throw here
+    // produced an empty 500, and the dashboard then failed on
+    // res.json() with "Unexpected end of JSON input" - an error that pointed at
+    // the browser and hid the actual fault entirely.
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("quick-add failed:", message);
+    return NextResponse.json(
+      { error: `Quick Add could not finish: ${message}` },
+      { status: 500 },
+    );
+  }
+}
+
+async function addRouter(req: Request) {
   const r = await resolveIsp(req);
   if ("error" in r) return r.error;
 
@@ -193,6 +210,14 @@ export async function POST(req: Request) {
     // The WireGuard server key IS included - NETPID just generated it - so the
     // peer is real. A router created without it would get an interface and no
     // tunnel, which is the state that was mistaken for "provisioned".
+    //
+    // strict:false is REQUIRED here, not optional. An ISP that has not yet
+    // filled in its site networks (migration 0046) is the normal state on day
+    // one, and refusing to create the router at all because of it would make
+    // Quick Add unusable. The script is generated with the unknown values
+    // blank, and installer_missing below tells the operator exactly which to
+    // fill in. The installer's own preflight stops on the router if any is
+    // still blank, so nothing half-configured can reach a live device.
     installer: buildRouterosInstaller({
       mode: (d.mode as "NEW" | "EXISTING") ?? "EXISTING",
       identity: name,
@@ -215,7 +240,7 @@ export async function POST(req: Request) {
       wgRouterTunnelIp: tunnel.routerIp,
       wgEndpoint: process.env.NETPID_WG_ENDPOINT?.trim() || undefined,
       mgmtNetwork: tunnel.subnet,
-    }),
+    }, { strict: false }),
     // What the operator still has to fill in before the installer will run.
     // Serving a config the router will reject is worse than saying so here.
     installer_missing: installerMissing({
@@ -230,7 +255,11 @@ export async function POST(req: Request) {
       pppoeEnabled: d.pppoe_enabled !== false,
       pppoePool: d.pppoe_pool ?? "",
       radiusServer: radius.host,
+      radiusSecret: secretOnce,
       nasShortname: shortname,
+      wgServerPublicKey: keys.publicKey,
+      wgServerTunnelIp: tunnel.vpsIp,
+      wgRouterTunnelIp: tunnel.routerIp,
     }),
     // Both scripts, always: the operator pastes the one that matches their box.
     scripts: buildRouterosScripts({

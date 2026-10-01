@@ -279,10 +279,14 @@ function sectionARest(L, c, rule, put, o) {
   put(`:global NP_WG_ON            ${q(o.wgEnabled === false ? "no" : "yes")}`);
   put(`:global NP_WG_IFACE         ${q(o.wgIface)}`);
   put(`:global NP_WG_LISTEN        ${q(o.wgListenPort)}`);
-  put(":global NP_WG_SERVER_PUB    \"\"");
-  put(":global NP_WG_SERVER_IP     \"\"");
-  put(":global NP_WG_ROUTER_IP     \"\"");
-  put(":global NP_WG_ENDPOINT      \"\"");
+  // The SERVER public key is public material by definition, so when NETPID
+  // supplies one it is written into the script and the operator does not have
+  // to paste it a second time. The router's PRIVATE key is never here: it is
+  // generated on the router in Section J and never leaves the box.
+  put(`:global NP_WG_SERVER_PUB    ${q(o.wgServerPublicKey)}`);
+  put(`:global NP_WG_SERVER_IP     ${q(o.wgServerTunnelIp)}`);
+  put(`:global NP_WG_ROUTER_IP     ${q(o.wgRouterTunnelIp)}`);
+  put(`:global NP_WG_ENDPOINT      ${q(o.wgEndpoint)}`);
   c("Source network permitted to reach the RouterOS API. This is what keeps");
   c("8728/8729 off the public internet. Blank means the API is NOT enabled.");
   put(`:global NP_MGMT_NET         ${q(o.mgmtNetwork)}`);

@@ -110,8 +110,11 @@ test("no secret is baked into the generated script", () => {
 test("no WireGuard peer is ever invented", () => {
   // A fabricated public key produces a tunnel that looks configured and never
   // handshakes, and a router NETPID still cannot manage.
-  assert.match(S, /:global NP_WG_SERVER_PUB    ""/);
-  assert.doesNotMatch(S, /NP_WG_SERVER_PUB\s+"[A-Za-z0-9+/]{43}="/);
+  // Blank only when NETPID supplied nothing. When it supplies a real key the
+  // script carries it, so the operator does not paste the same value twice.
+  const none = buildRouterosInstaller({ ...FULL, wgServerPublicKey: "" }, { strict: false });
+  assert.match(none, /:global NP_WG_SERVER_PUB    ""/);
+  assert.match(S, /:global NP_WG_SERVER_PUB    "iHtSz\+Y0QLqLS/);
   assert.match(S, /ENROLMENT INCOMPLETE/, "must explain that enrolment is pending");
   assert.match(S, /public-key\]\)/, "must print the router's own public key for enrolment");
 });
@@ -332,6 +335,7 @@ test("the web port also refuses to invent a network or a key", async () => {
   const s = web.buildRouterosInstaller({ identity: "GENE" }, { strict: false });
   assert.doesNotMatch(s, /10\.10\.10\./);
   assert.match(s, /:global NP_RADIUS_SECRET    ""/);
+  // Still must never invent one when NETPID gave it nothing.
   assert.match(s, /:global NP_WG_SERVER_PUB    ""/);
   assert.doesNotMatch(s, /NP_WG_SERVER_PUB\s+"[A-Za-z0-9+/]{43}="/);
 });
@@ -350,6 +354,55 @@ test("the installer refuses to generate a complete script with missing input", (
   // A partial script is possible, but only when explicitly requested.
   assert.doesNotThrow(() => buildRouterosInstaller({ identity: "X" }, { strict: false }));
 });
+
+// Quick Add calls the generator for an ISP whose site networks are all NULL,
+// which is the normal state on day one. Strict mode threw there, the route had
+// no catch, and the dashboard reported "Unexpected end of JSON input" - an
+// error that pointed at the browser and named neither the cause nor the field.
+// This pins the exact input that broke, so it cannot regress.
+test("Quick Add's real input still yields a script rather than throwing", () => {
+  const quickAddInput = {
+    mode: "EXISTING",
+    identity: "NEW-SITE",
+    wan: "ether1",
+    lanBridge: "bridge-lan",
+    lanPorts: ["ether2", "ether3", "ether4", "ether5"],
+    lanSubnet: "", lanGateway: "", dhcpPool: "",
+    hotspotEnabled: true,
+    hotspotSubnet: "", hotspotPool: "", hotspotDnsName: "",
+    pppoeEnabled: true, pppoePool: "",
+    radiusServer: "10.90.0.1",
+    radiusSecret: "generated-at-request-time",
+    nasShortname: "netpid-NEW-SITE",
+    wgServerPublicKey: "iHtSz+Y0QLqLS+KxUqoTUn45AvMEvUe9NXGMAcK6QmY=",
+    wgServerTunnelIp: "10.90.0.1",
+    wgRouterTunnelIp: "10.90.0.2",
+    mgmtNetwork: "10.90.0.0/30",
+  };
+  let script = null;
+  assert.doesNotThrow(() => { script = buildRouterosInstaller(quickAddInput, { strict: false }); },
+    "Quick Add's input must not throw");
+  // And it must be a usable, coherent script, not an empty string.
+  assert.ok(script.length > 5000);
+  for (const marker of [
+    "SECTION A", "SECTION B", "SECTION C", "SECTION D", "SECTION E", "SECTION F",
+    "SECTION G", "SECTION H", "SECTION I", "SECTION J", "SECTION K", "SECTION L",
+  ]) {
+    assert.ok(script.includes(marker), `partial installer is missing ${marker}`);
+  }
+  // The unset values are reported rather than invented, so the operator knows
+  // exactly what to fill in.
+  const missing = installerMissing(quickAddInput);
+  for (const label of ["LAN subnet", "LAN gateway", "DHCP pool", "HotSpot subnet", "PPPoE pool"]) {
+    assert.ok(missing.includes(label) || missing.some((m) => m.includes(label)),
+      `Quick Add would not report the missing ${label}`);
+  }
+  // NETPID's own values are present even though the site's are not.
+  assert.match(script, /:global NP_RADIUS_SERVER    "10\.90\.0\.1"/);
+  assert.match(script, /iHtSz\+Y0QLqLS\+KxUqoTUn45AvMEvUe9NXGMAcK6QmY=/);
+  assert.doesNotMatch(script, /secret=generated-at-request-time/);
+});
+
 
 test("every required value is named when input is rejected", () => {
   const text = installerMissing({}).join(" | ");
