@@ -185,6 +185,45 @@ test("no other migration installs a trigger on a column it did not declare", () 
 // ---------------------------------------------------------------------------
 // Management
 // ---------------------------------------------------------------------------
+test("every :set target is declared with :local before it is set", () => {
+  // THE FIELD FAILURE. RouterOS rejects `:set x ...` when `x` was never
+  // declared with `:local`, and the error points at the variable name:
+  //
+  //   Script Error: syntax error (line 65 column 6)
+  //
+  // which reads as if the URL were malformed. It was not: npUrl simply had no
+  // :local, because an earlier fix turned `:local npUrl (...)` into
+  // `:set npUrl "..."` and dropped the declaration along with the parentheses.
+  for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
+    const declared = new Set(
+      [...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
+    );
+    for (const [n, raw] of s.split("\n").entries()) {
+      const t = raw.replace(/(^|\s)#.*$/, "").trim();
+      const m = /^:set\s+(\w+)\s/.exec(t);
+      if (!m) continue;
+      assert.ok(declared.has(m[1]),
+        `${label} line ${n + 1} sets ${m[1]}, which is never declared: ${t.slice(0, 50)}`);
+    }
+  }
+});
+
+test("every variable read is either declared or a RouterOS built-in", () => {
+  // $npX read but never declared resolves to nothing, so a guard built on it
+  // silently passes and the guarded block never runs.
+  const BUILTIN = new Set(["nothing", "null", "true", "false"]);
+  for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
+    const declared = new Set(
+      [...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
+    );
+    for (const m of s.matchAll(/\$\((\w+)\)/g)) {
+      if (BUILTIN.has(m[1])) continue;
+      assert.ok(declared.has(m[1]),
+        `${label} reads $(${m[1]}), which is never declared`);
+    }
+  }
+});
+
 test("no generated line leaves an expression open", () => {
   // A parenthesised or bracketed expression split across lines is a syntax
   // error on RouterOS: the parser hits end-of-line still inside it and reports
@@ -222,11 +261,13 @@ test("no generated line is long enough to risk a paste or log limit", () => {
 });
 
 test("the bootstrap URL is built one statement per line", () => {
-  // The field failure: `[:local npUrl ("https://..."` followed by `. "?...`
-  // continuation lines. RouterOS stopped at the end of that line with only a
-  // column number to go on.
-  assert.ok(/^:set npUrl "https:\/\/[^"]+\/register\/[^"]+"$/m.test(BOOT),
-    "the base URL is one complete statement");
+  // Two field failures came out of this block:
+  //   1. `:local npUrl ("https://..."` followed by `. "?board="` continuation
+  //      lines. RouterOS stopped at the end of that line.
+  //   2. `:set npUrl "https://..."` with no `:local npUrl` first. RouterOS
+  //      rejected it at the variable name, "line 65 column 6".
+  assert.ok(/^:local npUrl "https:\/\/[^"]+\/register\/[^"]+"$/m.test(BOOT),
+    "the base URL is one complete statement, and npUrl is declared there");
   const appends = BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "));
   assert.equal(appends.length, 8, "one append per reported field");
   for (const a of appends) {
@@ -245,13 +286,19 @@ test("only the FIRST query parameter uses ?, and the rest use &", () => {
 });
 
 test("the register URL the router calls is reconstructed correctly", () => {
-  // Replay the generated statements to prove the final URL is well formed.
+  // Replay the generated statements to prove the final URL is well formed, and
+  // that the version actually reaches the query string. npQ no longer exists:
+  // it was a leftover from the single-expression version, and a URL whose
+  // version parameter silently arrived empty is how a 6.x router gets
+  // configured with a 7.x script.
   const vals = {
-    npB: "hAP lite", npM: "hAP lite", npQ: "7.21.5", npA: "arm",
+    npB: "hAP lite", npM: "hAP lite", npV: "7.21.5", npA: "arm",
     npC: "MIPS 24Kc V7.4", npR: "65536 KiB",
     npI: "ether1,ether2,wlan1", npG: "bridge-lan:ether2",
   };
-  let url = /:set npUrl "([^"]+)"/.exec(BOOT)[1];
+  const base = /:local npUrl "([^"]+)"/.exec(BOOT);
+  assert.ok(base, "npUrl must be declared with the base URL");
+  let url = base[1];
   for (const line of BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "))) {
     const sep = /"([?&])([a-z]+)="/.exec(line);
     const v = /\$(np\w+)\)/.exec(line)[1];

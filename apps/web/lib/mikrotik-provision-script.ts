@@ -121,13 +121,18 @@ export function buildBootstrapScript(opts: {
   c("reaches end-of-line still inside the parenthesis and gives up, reporting");
   c("only a column number with no clue which line it was. Every statement");
   c("below is therefore complete on its own line.");
+  c("");
+  c("npUrl MUST be declared with :local first. RouterOS rejects :set on a");
+  c("variable that does not exist, and the error points at the variable name,");
+  c("which reads as if the URL were malformed. Declaring it here is what makes");
+  c("the :set lines below legal.");
   // The FIRST append carries the "?", every later one "&". Getting this wrong
   // sends ?board=x&board=y and the server sees only the last value.
   const params: [string, string][] = [
-    ["board", "npB"], ["model", "npM"], ["version", "npQ"], ["arch", "npA"],
+    ["board", "npB"], ["model", "npM"], ["version", "npV"], ["arch", "npA"],
     ["cpu", "npC"], ["ram", "npR"], ["ifaces", "npI"], ["bridges", "npG"],
   ];
-  p(`:set npUrl ${q(reg)}`);
+  p(`:local npUrl ${q(reg)}`);
   for (const [i, [k, v]] of params.entries()) {
     p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $${v})`);
   }
@@ -139,9 +144,13 @@ export function buildBootstrapScript(opts: {
   p("  :put $reg");
   p("}");
   p("");
+  // Clear every variable the script declared, so the router console is not left
+  // littered and a re-paste starts from a known state. npQ is gone: it was a
+  // leftover from the single-expression version of the URL, and clearing an
+  // undeclared variable aborts the script here, AFTER the report was sent but
+  // with an error the operator sees and cannot explain.
   p(":set npB \"\"");
   p(":set npM \"\"");
-  p(":set npQ \"\"");
   p(":set npV \"\"");
   p(":set npA \"\"");
   p(":set npC \"\"");
