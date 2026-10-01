@@ -68,7 +68,10 @@ test("RouterOS has no line continuation, so no statement spans two lines", () =>
 
 test("the installer targets RouterOS 7 and refuses anything else", () => {
   assert.match(S, /RouterOS 7\.x/);
-  assert.match(S, /npMajor != "7"/, "must gate on the major version before touching anything");
+  // The gate is [:find $npVer "7."], not a [:pick] of the first character:
+  // [:pick] is 1-based so index 0 returns nothing and the test failed on
+  // EVERY router, printing "RouterOS  detected" on a healthy 7.x box.
+  assert.match(S, /\[:find \$npVer "7\."\] < 0/, "must gate on the version before touching anything");
   assert.match(S, /targets 7\.x only/);
 });
 
@@ -453,7 +456,7 @@ test("the Quick Add API path yields the full installer, not the partial one", as
     ["D LAN ports", /\/interface bridge port add bridge=\$NP_LAN_BRIDGE/],
     ["E DHCP pool", /\/ip pool add name=\$NP_DHCP_POOL/],
     ["E DHCP server", /\/ip dhcp-server add name=\$NP_TAG interface=\$NP_LAN_BRIDGE/],
-    ["E DHCP network", /\/ip dhcp-server network add address=\$npNet gateway=\$NP_LAN_GATEWAY/],
+    ["E DHCP network", /\/ip dhcp-server network add address=\$NP_LAN_NET gateway=\$NP_LAN_GATEWAY/],
     ["F NAT masquerade", /\/ip firewall nat add chain=srcnat action=masquerade/],
     ["G firewall section", /# SECTION F - FIREWALL/],
     ["G firewall established", /connection-state=established,related comment="\$NP_TAG established"/],
@@ -603,9 +606,9 @@ test("LAN, bridge and DHCP are derived from the declared values", () => {
   assert.match(S, /\/interface bridge add name=\$NP_LAN_BRIDGE/);
   assert.match(S, /\/interface bridge port add bridge=\$NP_LAN_BRIDGE interface=\$p/);
   assert.match(S, /\/ip address add address=\$NP_LAN_NET interface=\$NP_LAN_BRIDGE/);
-  assert.match(S, /\/ip pool add name=\$NP_DHCP_POOL ranges=\$npRange/);
+  assert.match(S, /\/ip pool add name=\$NP_DHCP_POOL ranges=\$NP_DHCP_RANGE/);
   assert.match(S, /\/ip dhcp-server add name=\$NP_TAG interface=\$NP_LAN_BRIDGE/);
-  assert.match(S, /\/ip dhcp-server network add address=\$npNet gateway=\$NP_LAN_GATEWAY dns-server=\$NP_DNS_SERVERS/);
+  assert.match(S, /\/ip dhcp-server network add address=\$NP_LAN_NET gateway=\$NP_LAN_GATEWAY dns-server=\$NP_DNS_SERVERS/);
 });
 
 test("NAT masquerade is present and idempotent", () => {
@@ -700,5 +703,116 @@ test("no route is invented pointing the VPS at the router's own address", () => 
   // installs the correct route in the kernel.
   assert.doesNotMatch(S, /gateway=\$NP_WG_ROUTER_IP/);
   assert.match(S, /allowed-address=\$npAllowed/);
+});
+
+
+
+// ---------------------------------------------------------------------------
+// RouterOS dialect. Every one of these was caught by a real hAP lite rejecting
+// the script. None was caught by a generator unit test, because the generator
+// is correct and the failures only exist on the router.
+// ---------------------------------------------------------------------------
+
+// Only EXECUTABLE lines are checked. Several of the constructs below are named
+// in the comments that explain why they are banned - "[:pick] with a 0 start",
+// ":continue" - so scanning raw text would flag the very documentation that
+// records the fix.
+function exec(script) {
+  return script.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+}
+
+test("no construct RouterOS actually rejects is emitted", () => {
+  const E = exec(S);
+  for (const [what, re] of [
+    // [:pick] is 1-BASED. A 0 index returns nothing instead of erroring, which
+    // made the version test abort on every router and print "RouterOS  detected".
+    ["[:pick] with a 0 start", /\[:pick\s+\$[A-Za-z]+\s+0\b/],
+    // A nested [:find] inside [:pick] arguments is a parse error.
+    ["nested [:find] inside [:pick]", /\[:pick[^\n]*\[:find/],
+    // [:pick] takes one or two indices. Three is "expected end of command".
+    ["three-argument [:pick]", /\[:pick\s+\$[A-Za-z]+\s+\[:/],
+    // RouterOS has no :continue.
+    [":continue", /:continue\b/],
+    // [:len /ip service find name=api] is missing its closing bracket.
+    ["[:len with an unclosed menu", /\[:len\s+\/[a-z]/],
+  ]) {
+    const hit = E.find((l) => re.test(l));
+    assert.equal(hit, undefined, `RouterOS rejects this (${what}): ${hit ?? ""}`);
+  }
+});
+
+test("the installer stops cleanly when SECTION A was never run", () => {
+  // The operator pasted from SECTION B. Every :global lives in SECTION A, so
+  // every command below failed with a bare "expected end of command" that named
+  // nothing. The script now proves SECTION A ran, and stops before changing
+  // anything.
+  assert.match(S, /SECTION 0 - PROOF THAT SECTION A RAN/);
+  assert.match(S, /SECTION A did not run/);
+  assert.match(S, /:error "NETPID: SECTION A did not run; nothing was changed"/);
+  assert.match(S, /paste it from the VERY TOP, including/);
+});
+
+test("the version test cannot silently pass on a non-7.x router", () => {
+  assert.match(S, /\[:find \$npVer "7\."\] < 0/);
+  assert.doesNotMatch(S, /\[:pick \$npVer/);
+  assert.match(S, /RouterOS .* confirmed\./);
+});
+
+test("pool ranges and the PPPoE local address are supplied, never derived", () => {
+  // Deriving them needed 1-based [:pick] arithmetic that silently produced empty
+  // values, and an empty range breaks every client on the LAN.
+  assert.match(S, /:global NP_DHCP_RANGE       /);
+  assert.match(S, /:global NP_HOTSPOT_RANGE    /);
+  assert.match(S, /:global NP_PPPOE_LOCAL      /);
+  assert.match(S, /ranges=\$NP_DHCP_RANGE/);
+  assert.match(S, /local-address=\$npPppLocal/);
+  assert.doesNotMatch(S, /\$npOct/);
+  assert.doesNotMatch(S, /\$hOct/);
+  assert.doesNotMatch(S, /\$npRange/);
+});
+
+test("the generated password uses a valid two-argument [:pick]", () => {
+  assert.match(S, /:set npIdx \[:rndnum from=1 to=\$npLen\]/);
+  assert.match(S, /\[:pick \$npChars \$npIdx\]/);
+  assert.doesNotMatch(S, /\[:pick \$npChars \[:rndnum/);
+});
+
+test("LAN ports are filtered without :continue", () => {
+  // RouterOS has no :continue, and the comment that documents this names it, so
+  // the check is on executable lines only.
+  assert.equal(exec(S).find((l) => /:continue\b/.test(l)), undefined);
+  assert.match(S, /SKIP-EMPTY/);
+});
+
+test("every else branch actually opens", () => {
+  // 28 "} else={" statements were being emitted as COMMENTS by an automated
+  // pass, so no else branch in the whole installer ever opened and every else
+  // body ran unconditionally - the SKIP branch printed even when the condition
+  // was false. A brace-balanced script is not enough; each if must have its
+  // own else emitted.
+  const E = exec(S);
+  const ifs = E.filter((l) => /^\s*:if\s*\(/.test(l) && /do=\{\s*$/.test(l)).length;
+  const elses = E.filter((l) => /^\s*\} else=\{/.test(l)).length;
+  // Some :if lines are single-line do={ ... } with no else. Every multi-line
+  // :if that opens a block must be closed, and the closers must be statements.
+  assert.ok(elses > 40, `only ${elses} else branches were emitted as statements`);
+  // And none of them is a comment.
+  assert.equal(S.split("\n").filter((l) => /^#\s*\} else=\{/.test(l)).length, 0,
+    "an '} else={' was emitted as a comment, so that branch never opens");
+  assert.ok(ifs > 40, `only ${ifs} block-opening :if statements found`);
+});
+
+test("the generated script is brace-balanced as RouterOS sees it", () => {
+  // Pasted line by line, an unbalanced block leaves the terminal sitting in a
+  // continuation prompt for the rest of the file.
+  let depth = 0, min = 0;
+  for (const raw of S.split("\n")) {
+    const l = raw.trim();
+    if (!l || l.startsWith("#")) continue;
+    for (const ch of l) { if (ch === "{") depth++; if (ch === "}") depth--; }
+    if (depth < min) min = depth;
+  }
+  assert.equal(depth, 0, `unclosed block remains (depth ${depth})`);
+  assert.equal(min, 0, `a closing brace appears before its opening (depth ${min})`);
 });
 
