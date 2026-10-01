@@ -126,6 +126,17 @@ export function buildBootstrapScript(opts: {
   c("variable that does not exist, and the error points at the variable name,");
   c("which reads as if the URL were malformed. Declaring it here is what makes");
   c("the :set lines below legal.");
+  c("");
+  c("SPACES ARE ENCODED, BECAUSE A RAW SPACE BREAKS THE FETCH.");
+  c("'hAP lite', 'MIPS 24Kc V7.4' and '65536 KiB' all contain one. RFC 3986");
+  c("forbids a literal space in a URL and /tool fetch rejects the whole request,");
+  c("so the report never leaves the router. RouterOS has no URL encoder, so");
+  c("[:split] on the space and rejoin with '+' stands in for %20. '+' decodes");
+  c("back to a space server side, so nothing is lost.");
+  c("");
+  c("Only spaces are handled. A value containing &, ?, #, = or \" would still");
+  c("corrupt the query string, but no board name, CPU string, RAM figure or");
+  c("interface name contains one, and the report is retried on a fresh token.");
   // The FIRST append carries the "?", every later one "&". Getting this wrong
   // sends ?board=x&board=y and the server sees only the last value.
   const params: [string, string][] = [
@@ -133,22 +144,38 @@ export function buildBootstrapScript(opts: {
     ["cpu", "npC"], ["ram", "npR"], ["ifaces", "npI"], ["bridges", "npG"],
   ];
   p(`:local npUrl ${q(reg)}`);
-  for (const [i, [k, v]] of params.entries()) {
-    p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $${v})`);
-  }
+  params.forEach(([k, v], i) => {
+    // npS is a per-field scratch buffer: split on space, rejoin with "+".
+    p(`:local npS ""`);
+    p(`:foreach npW in=[:split $${v} " "] do={`);
+    p(`  :if ([:len $npS] > 0) do={ :set npS ($npS . "+") }`);
+    p(`  :set npS ($npS . $npW)`);
+    p(`}`);
+    p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $npS)`);
+    p(`:set npS ""`);
+    p(`:set npW ""`);
+  });
+  p("");
   p(":do {");
   p("  /tool fetch mode=https keep-result=no url=$npUrl");
   p("  :put \"NETPID: hardware reported. Check the dashboard.\"");
   p("} on-error={");
-  p("  :put \"NETPID: report failed. Check the router has DNS and can reach:\"");
-  p("  :put $reg");
+  p("  :put \"NETPID: report FAILED. The router is fine; the upload did not go.\"");
+  p("  :put \"Print this URL and open it in a browser to see why:\"");
+  // Print the URL that actually failed. Printing an empty line, as an
+  // undeclared variable did, tells the operator nothing at all.
+  p(`  :put $npUrl`);
+  p("  :put \"If it opens in a browser, the router is blocking outbound HTTPS.\"");
+  p("  :put \"If it does not, the token has expired - generate a new one.\"");
   p("}");
   p("");
   // Clear every variable the script declared, so the router console is not left
-  // littered and a re-paste starts from a known state. npQ is gone: it was a
-  // leftover from the single-expression version of the URL, and clearing an
-  // undeclared variable aborts the script here, AFTER the report was sent but
-  // with an error the operator sees and cannot explain.
+  // littered and a re-paste starts from a known state.
+  //
+  // npQ is deliberately absent: it was a leftover from the single-expression
+  // version of the URL, and clearing an undeclared variable aborts the script
+  // HERE, after the report was sent but with an error the operator cannot
+  // explain. npS and npW are scratch buffers already reset inside the loop.
   p(":set npB \"\"");
   p(":set npM \"\"");
   p(":set npV \"\"");
@@ -160,6 +187,7 @@ export function buildBootstrapScript(opts: {
   p(":set npUrl \"\"");
   return L.join(NL);
 }
+
 export interface ConfigureOptions {
   routerId: string;
   rosMajor: 7 | 6;

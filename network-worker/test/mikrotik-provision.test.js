@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 
 import {
-  decideCapabilities, hashToken, isEphemeralHost, mintToken, parseBridges,
-  parseRamMb, tokenMatchesHash, validateSelection, buildDetectedInterfaces,
+  decideCapabilities, decodeParam, hashToken, isEphemeralHost, mintToken,
+  parseBridges, parseRamMb, tokenMatchesHash, validateSelection,
+  buildDetectedInterfaces,
 } from "../../apps/web/lib/mikrotik-provision.ts";
 import { buildConfigureScript, buildBootstrapScript } from "../../apps/web/lib/mikrotik-provision-script.ts";
 
@@ -195,9 +196,11 @@ test("every :set target is declared with :local before it is set", () => {
   // :local, because an earlier fix turned `:local npUrl (...)` into
   // `:set npUrl "..."` and dropped the declaration along with the parentheses.
   for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
-    const declared = new Set(
-      [...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
-    );
+    // A :foreach loop variable is declared by the loop itself, so it counts.
+    const declared = new Set([
+      ...[...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
+      ...[...s.matchAll(/:foreach\s+(\w+)\s+in=/g)].map((m) => m[1]),
+    ]);
     for (const [n, raw] of s.split("\n").entries()) {
       const t = raw.replace(/(^|\s)#.*$/, "").trim();
       const m = /^:set\s+(\w+)\s/.exec(t);
@@ -213,15 +216,65 @@ test("every variable read is either declared or a RouterOS built-in", () => {
   // silently passes and the guarded block never runs.
   const BUILTIN = new Set(["nothing", "null", "true", "false"]);
   for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
-    const declared = new Set(
-      [...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
-    );
+    // A :foreach loop variable is declared by the loop itself, so it counts.
+    const declared = new Set([
+      ...[...s.matchAll(/^\s*:local\s+(\w+)/gm)].map((m) => m[1]),
+      ...[...s.matchAll(/:foreach\s+(\w+)\s+in=/g)].map((m) => m[1]),
+    ]);
     for (const m of s.matchAll(/\$\((\w+)\)/g)) {
       if (BUILTIN.has(m[1])) continue;
       assert.ok(declared.has(m[1]),
         `${label} reads $(${m[1]}), which is never declared`);
     }
   }
+});
+
+test("no value is concatenated into the URL with a raw space", () => {
+  // THE FIELD FAILURE. The script ran to completion and printed
+  //
+  //   NETPID: report failed. Check the router has DNS and can reach:
+  //   <blank line>
+  //
+  // so /tool fetch was rejected. The cause was not DNS: the URL was built by
+  // concatenating values that contain spaces - "hAP lite", "MIPS 24Kc V7.4",
+  // "65536 KiB". RFC 3986 forbids a literal space in a URL and RouterOS has no
+  // URL encoder, so the request never left the router.
+  //
+  // Every value therefore goes through a [:split] on space and is rejoined with
+  // "+", which decodeParam() turns back into a space server side.
+  const encoded = BOOT.match(/:foreach npW in=\[:split \$\w+ " "\] do=\{/g) ?? [];
+  assert.equal(encoded.length, 8, "every one of the eight values is space-encoded");
+  for (const line of BOOT.split("\n")) {
+    const t = line.replace(/(^|\s)#.*$/, "").trim();
+    // Any line that appends a value to the URL must append $npS, the encoded
+    // buffer, never a raw variable.
+    if (!t.startsWith(":set npUrl (")) continue;
+    assert.match(t, /\$npS\)$/,
+      `a value is concatenated raw, so a space would break the fetch: ${t}`);
+  }
+});
+
+test("a value with a space round-trips through the encoding to the same string", () => {
+  // Simulate what the router does, then what the server does with the result.
+  const encode = (v) => v.split(" ").filter((w) => w.length).join("+");
+  for (const raw of ["hAP lite", "MIPS 24Kc V7.4", "65536 KiB", "arm", "7.21.5"]) {
+    const onTheWire = encode(raw);
+    assert.ok(!onTheWire.includes(" "), `${raw} still contains a space on the wire`);
+    assert.equal(decodeParam(onTheWire), raw, `${raw} does not survive the round trip`);
+  }
+});
+
+test("a failed report prints the URL that failed, not an empty line", () => {
+  // The handler used to print $reg, which is a JAVASCRIPT variable, not RouterOS
+  // state, so it always expanded to nothing. The operator saw a blank line where
+  // the diagnostic should have been and had nothing to act on.
+  const handler = BOOT.slice(BOOT.indexOf("on-error={"));
+  assert.match(handler, /:put \$npUrl/,
+    "the failing URL must be printed so the operator can open it and see why");
+  assert.ok(!/\$reg\b/.test(BOOT), "$reg is not a RouterOS variable and must not appear");
+  // And it must name the two real causes, not just "check your DNS".
+  assert.match(handler, /blocking outbound HTTPS/);
+  assert.match(handler, /token has expired/);
 });
 
 test("no generated line leaves an expression open", () => {
@@ -271,7 +324,9 @@ test("the bootstrap URL is built one statement per line", () => {
   const appends = BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "));
   assert.equal(appends.length, 8, "one append per reported field");
   for (const a of appends) {
-    assert.match(a, /^:set npUrl \(\$npUrl \. "[?&][a-z]+=" \. \$np\w+\)$/, `bad append: ${a}`);
+    // $npS, not the raw variable: a value with a space has to be encoded first
+    // or /tool fetch rejects the whole URL.
+    assert.match(a, /^:set npUrl \(\$npUrl \. "[?&][a-z]+=" \. \$npS\)$/, `bad append: ${a}`);
   }
 });
 
@@ -287,10 +342,14 @@ test("only the FIRST query parameter uses ?, and the rest use &", () => {
 
 test("the register URL the router calls is reconstructed correctly", () => {
   // Replay the generated statements to prove the final URL is well formed, and
-  // that the version actually reaches the query string. npQ no longer exists:
-  // it was a leftover from the single-expression version, and a URL whose
-  // version parameter silently arrived empty is how a 6.x router gets
-  // configured with a 7.x script.
+  // that values with spaces survive as encoded-then-decoded.
+  //
+  // The replay follows the script: split the value on space, rejoin with "+",
+  // append that. Then the server decodes "+" back to a space. Values come out
+  // identical to what the router read, so nothing is lost by the encoding.
+  //
+  // npV, not npQ: npQ was a leftover, and a URL whose version parameter silently
+  // arrived empty is how a 6.x router gets configured with a 7.x script.
   const vals = {
     npB: "hAP lite", npM: "hAP lite", npV: "7.21.5", npA: "arm",
     npC: "MIPS 24Kc V7.4", npR: "65536 KiB",
@@ -299,16 +358,37 @@ test("the register URL the router calls is reconstructed correctly", () => {
   const base = /:local npUrl "([^"]+)"/.exec(BOOT);
   assert.ok(base, "npUrl must be declared with the base URL");
   let url = base[1];
-  for (const line of BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "))) {
-    const sep = /"([?&])([a-z]+)="/.exec(line);
-    const v = /\$(np\w+)\)/.exec(line)[1];
-    url += sep[1] + sep[2] + "=" + vals[v];
+
+  // Each field's source variable, taken from the [:split] that encodes it.
+  const sourceFor = [];
+  const lines = BOOT.split("\n");
+  for (const [i, line] of lines.entries()) {
+    const m = /:foreach npW in=\[:split \$(\w+) " "\] do=\{/.exec(line);
+    if (!m) continue;
+    // The append that follows this block uses $npS, the encoded buffer.
+    const append = lines.slice(i, i + 8).find((l) => l.startsWith(":set npUrl ($npUrl . "));
+    const sep = /"([?&])([a-z]+)="/.exec(append ?? "");
+    sourceFor.push({ src: m[1], sep: sep[1], key: sep[2] });
   }
+  assert.equal(sourceFor.length, 8, "every field is encoded before it is appended");
+
+  for (const { src, sep, key } of sourceFor) {
+    // What the router does: split on space, rejoin with "+".
+    const onTheWire = vals[src].split(" ").filter(Boolean).join("+");
+    assert.ok(!onTheWire.includes(" "), `${key} still has a raw space`);
+    url += sep + key + "=" + onTheWire;
+  }
+
+  // The URL must be parseable, which it is not with a literal space in it.
   const u = new URL(url);
-  assert.equal(u.searchParams.get("board"), "hAP lite");
-  assert.equal(u.searchParams.get("version"), "7.21.5");
-  assert.equal(u.searchParams.get("ifaces"), "ether1,ether2,wlan1");
-  assert.equal(u.searchParams.get("bridges"), "bridge-lan:ether2");
+  // And the server must decode "+" back to the original value.
+  assert.equal(decodeParam(u.searchParams.get("board")), "hAP lite");
+  assert.equal(decodeParam(u.searchParams.get("version")), "7.21.5");
+  assert.equal(decodeParam(u.searchParams.get("cpu")), "MIPS 24Kc V7.4");
+  assert.equal(decodeParam(u.searchParams.get("ram")), "65536 KiB");
+  assert.equal(decodeParam(u.searchParams.get("ifaces")), "ether1,ether2,wlan1");
+  assert.equal(decodeParam(u.searchParams.get("bridges")), "bridge-lan:ether2");
+  assert.equal(u.searchParams.size, 8, "all eight parameters arrive");
   assert.equal(u.pathname.split("/").pop().length, 43, "the token stays a full path segment");
 });
 
@@ -740,13 +820,16 @@ test("a failed report says so on the router console", () => {
   // Checked against the raw script: the text lives inside a :put string, which
   // statements() strips. The operator is standing at the router and must not be
   // left watching a wizard that never advances.
-  assert.ok(BOOT.includes("report failed"), "the failure must be announced");
-  assert.ok(/check the router has DNS/i.test(BOOT), "with the likely cause");
+  assert.ok(/report FAILED/i.test(BOOT), "the failure must be announced");
+  assert.ok(/blocking outbound HTTPS/i.test(BOOT), "with the likely causes");
   // And the register endpoint must be echoed on failure, so they can test
   // reachability by hand instead of guessing.
   assert.ok(BOOT.includes("/register/"), "the callback URL is in the script");
-  assert.ok(statements(BOOT).some((l) => /:put \$reg\b/.test(l)),
-    "and is printed when the report fails");
+  // $npUrl, not $reg: $reg is a JavaScript variable, not RouterOS state, so it
+  // always expanded to nothing and the operator got a blank line where the
+  // diagnostic should have been.
+  assert.ok(statements(BOOT).some((l) => /:put \$npUrl\b/.test(l)),
+    "the failing URL is printed when the report fails");
 });
 // ---------------------------------------------------------------------------
 // Management
