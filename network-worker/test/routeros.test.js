@@ -11,6 +11,90 @@ import { buildCustomerQueue, buildRouterosSetup, normalizeRosVersion, ratePair, 
 // wrong path does not error — it silently configures nothing, which is exactly
 // the failure this suite exists to prevent.
 
+// --- What a real router actually rejected ----------------------------------
+// These three were found by pasting the generated script into a live
+// hAP lite running RouterOS 7.21.5, not by reading the source. The router
+// answered "expected end of command" and "bad command name radius", and the
+// RADIUS server was never created, so PPPoE authenticated against nothing.
+
+test("a colon in a value is quoted, or the router aborts the line", () => {
+  // RouterOS ends an unquoted value at a colon. The NETPID tag is full of them.
+  assert.equal(rosQuote("NETPID:netpid-TEVENN"), '"NETPID:netpid-TEVENN"');
+  assert.equal(rosQuote("a:b:c"), '"a:b:c"');
+  // Values with no colon stay bare, so ordinary output is not churned.
+  assert.equal(rosQuote("netpid-TEVENN"), "netpid-TEVENN");
+  assert.equal(rosQuote("1.1.1.1"), "1.1.1.1");
+  assert.equal(rosQuote(""), '""');
+});
+
+test("the RADIUS server line survives a paste on a v7 router", () => {
+  const s = buildRouterosSetup({
+    shortname: "TEVENN", radiusServer: "87.76.137.72", secret: "s3cr3t", rosVersion: "7",
+  });
+
+  // v7 moved RADIUS out of /ip. /ip/radius is "bad command name radius" on 7.x.
+  assert.match(s, /^\/radius add service=ppp,hotspot address=87\.76\.137\.72 /m);
+  assert.doesNotMatch(s, /\/ip\/radius/, "the RouterOS 6 path must not appear in a v7 script");
+  assert.doesNotMatch(s, /\/ip radius/, "the RouterOS 6 path must not appear in a v7 script");
+
+  // The property names are authentication-port / accounting-port. auth-port and
+  // acct-port do not exist and the whole line is rejected.
+  assert.match(s, /authentication-port=1812/);
+  assert.match(s, /accounting-port=1813/);
+  assert.doesNotMatch(s, /\bauth-port=/);
+  assert.doesNotMatch(s, /\bacct-port=/);
+
+  // Every command must have its tag quoted.
+  assert.match(s, /comment="NETPID:TEVENN"/);
+  assert.doesNotMatch(s, /comment=NETPID:/, "an unquoted colon aborts the line");
+});
+
+test("v6 still uses the v6 RADIUS path, because 6.x has no top-level /radius", () => {
+  const s = buildRouterosSetup({
+    shortname: "core", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6",
+  });
+  assert.match(s, /\/ip radius add service=ppp,hotspot/);
+  assert.doesNotMatch(s, /^\/radius add/m);
+});
+
+test("CoA needs a firewall rule, or disconnect from the dashboard does nothing", () => {
+  // accept=yes alone leaves the listener behind the default input policy, so
+  // every Disconnect-Request is dropped before it is parsed.
+  const s = buildRouterosSetup({
+    shortname: "TEVENN", radiusServer: "87.76.137.72", secret: "s3cr3t",
+    rosVersion: "7", routerIp: "10.10.10.2",
+  });
+  assert.match(s, /\/radius incoming set accept=yes port=3799/);
+  assert.match(s, /\/ip\/firewall\/filter add chain=input action=accept protocol=udp dst-port=3799/);
+  // Scoped to the RADIUS server, not open to the internet.
+  assert.match(s, /dst-port=3799 src-address=87\.76\.137\.72/);
+  assert.match(s, /comment="NETPID:coa:TEVENN"/);
+});
+
+test("a section with nothing to configure is not announced", () => {
+  // With no hotspot profiles the old script printed the header and no commands,
+  // which reads as "this half failed" on a terminal.
+  const s = buildRouterosSetup({
+    shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7",
+  });
+  assert.doesNotMatch(s, /5\. HotSpot/);
+
+  const withHotspot = buildRouterosSetup({
+    shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7",
+    profiles: [{ name: "hs", kind: "hotspot", download_kbps: 5000, upload_kbps: 1000 }],
+  });
+  assert.match(withHotspot, /5\. HotSpot/);
+  assert.match(withHotspot, /\/ip hotspot profile set \[find name=hs\] use-radius=yes/);
+});
+
+test("verify block uses paths that exist on the target version", () => {
+  const v7 = buildRouterosSetup({ shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "7" });
+  assert.match(v7, /^\/radius print$/m);
+  assert.doesNotMatch(v7, /^\/ip\/radius print$/m);
+  const v6 = buildRouterosSetup({ shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6" });
+  assert.match(v6, /^\/ip radius print$/m);
+});
+
 test("normalizeRosVersion accepts the shapes an operator actually types", () => {
   assert.equal(normalizeRosVersion("6"), "6");
   assert.equal(normalizeRosVersion("6.49.10"), "6");
@@ -114,7 +198,7 @@ test("setup script wires RADIUS, PPPoE, HotSpot and CoA", () => {
     identity: "nairobi-core-1",
   });
   assert.match(s, /\/radius add service=ppp,hotspot address=10\.0\.0\.5 secret=s3cr3t/);
-  assert.match(s, /auth-port=1812 acct-port=1813/);
+  assert.match(s, /authentication-port=1812 accounting-port=1813/);
   assert.match(s, /src-address=196\.201\.214\.10/);
   assert.match(s, /\/ppp aaa set use-radius=yes accounting=yes/);
   assert.match(s, /\/radius incoming set accept=yes port=3799/);

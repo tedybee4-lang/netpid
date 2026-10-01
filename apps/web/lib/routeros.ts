@@ -23,10 +23,18 @@ export function ratePair(uploadKbps: number | null | undefined, downloadKbps: nu
   return `${rx}k/${tx}k`;
 }
 
-/** RouterOS quoting: wrap in double quotes, escape " and \ and newlines. */
+/**
+ * RouterOS quoting: wrap in double quotes, escape " and \ and newlines.
+ *
+ * The character class below decides what may appear UNQUOTED. It must not
+ * include ":". RouterOS treats a colon inside an unquoted value as the end of
+ * the value, so every comment tagged `NETPID:<shortname>` was emitted as
+ * `comment=NETPID:netpid-TEVENN` and the router answered
+ * "expected end of command". Quoting those is the whole fix.
+ */
 export function rosQuote(value: unknown): string {
   const s = String(value ?? "");
-  if (s !== "" && /^[A-Za-z0-9._:/@-]+$/.test(s)) return s;
+  if (s !== "" && /^[A-Za-z0-9._/@-]+$/.test(s)) return s;
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ")}"`;
 }
 
@@ -55,6 +63,9 @@ export function normalizeRosVersion(value: unknown): "6" | "7" {
  *     and the AP stays dark.
  *   - 7 moved the lease to /ip/dhcp-server/lease; the v6 form still resolves
  *     on 6.x, so each script gets its own.
+ *   - 7 moved RADIUS out of /ip entirely. A 7.x router answers
+ *     "bad command name radius" for /ip radius, and the RADIUS client never
+ *     gets configured — PPPoE then silently authenticates against nothing.
  */
 export function rosPaths(version: unknown) {
   const v7 = normalizeRosVersion(version) === "7";
@@ -63,6 +74,8 @@ export function rosPaths(version: unknown) {
     wireless: v7 ? "/interface wifi" : "/interface wireless",
     radioName: v7 ? "wifi1" : "wlan1",
     dhcpLease: v7 ? "/ip/dhcp-server/lease" : "/ip/dhcp-server lease",
+    // v6 nests the RADIUS client under /ip; v7 promotes it to a top-level menu.
+    radiusClient: v7 ? "/radius" : "/ip radius",
     cookieHardening: v7,
   };
 }
@@ -152,11 +165,17 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
   );
   lines.push("");
 
-  lines.push(c("3. RADIUS accounting client (PPP + HotSpot share one service)"));
-  lines.push(`:do { /ip/radius remove [find comment=${rosQuote(`NETPID:${shortname}`)}] } on-error={}`);
+  lines.push(c("3. RADIUS server - one entry serves PPPoE and HotSpot"));
   lines.push(
-    `/radius add service=ppp,hotspot address=${server} secret=${secret} ` +
-      `auth-port=${authPort} acct-port=${acctPort} timeout=1500ms${src} ` +
+    `:do { ${paths.radiusClient} remove [find comment=${rosQuote(`NETPID:${shortname}`)}] } on-error={}`,
+  );
+  // Property names are authentication-port / accounting-port. The shorter
+  // auth-port / acct-port spellings do not exist, and the router rejects the
+  // whole line - which left PPPoE authenticating against a server that was
+  // never created.
+  lines.push(
+    `${paths.radiusClient} add service=ppp,hotspot address=${server} secret=${secret} ` +
+      `authentication-port=${authPort} accounting-port=${acctPort} timeout=1500ms${src} ` +
       `comment=${rosQuote(`NETPID:${shortname}`)}`,
   );
   lines.push("");
@@ -172,18 +191,21 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
   }
   lines.push("");
 
-  lines.push(c("5. HotSpot - captive-portal logins also authorize via RADIUS"));
-  for (const p of byName("hotspot")) {
+  const hotspot = byName("hotspot");
+  if (hotspot.length) {
+    lines.push(c("5. HotSpot - captive-portal logins also authorize via RADIUS"));
+    for (const p of hotspot) {
     const name = rosName(p.name, "hotspot-profile");
     const limit = ratePair(p.upload_kbps, p.download_kbps);
     const rate = limit ? ` rate-limit=${limit}` : "";
     // HttpOnly on the session cookie is a 7.x property; older 6.x refuses it,
     // which would abort the rest of the paste, so it is v7-only.
     const cookie = paths.cookieHardening ? " http-cookie-httponly=yes" : "";
-    lines.push(
-      `/ip hotspot profile set [find name=${rosQuote(name)}] use-radius=yes ` +
-        `accounting=yes interim-update=5m login-by=http-chap,http-pap,madius${rate}${cookie}`,
-    );
+      lines.push(
+        `/ip hotspot profile set [find name=${rosQuote(name)}] use-radius=yes ` +
+          `accounting=yes interim-update=5m login-by=http-chap,http-pap,madius${rate}${cookie}`,
+      );
+    }
   }
   lines.push("");
 
@@ -205,6 +227,18 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
   lines.push(c("7. CoA - lets NETPID disconnect a user from the dashboard"));
   lines.push(
     `/radius incoming set accept=yes port=${coaPort} comment=${rosQuote(`NETPID:${shortname}`)}`,
+  );
+  // accept=yes is only half of it. The default input policy drops unsolicited
+  // UDP, so without this rule the listener is enabled and every Disconnect-Request
+  // is still discarded before it reaches it - and "disconnect from the
+  // dashboard" silently does nothing. Scoped to the RADIUS server, not /32-wide.
+  lines.push(
+    `:do { /ip/firewall/filter remove [find comment=${rosQuote(`NETPID:coa:${shortname}`)}] } on-error={}`,
+  );
+  lines.push(
+    `/ip/firewall/filter add chain=input action=accept protocol=udp ` +
+      `dst-port=${coaPort}${src ? ` src-address=${server}` : ""} ` +
+      `comment=${rosQuote(`NETPID:coa:${shortname}`)}`,
   );
   lines.push("");
 
@@ -229,12 +263,19 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
 
   lines.push(c("Verify - these should print without error"));
   lines.push("/system resource print");
-  lines.push("/ip/radius print");
+  // The v6 path is gone in RouterOS 7, so the verify block has to follow the
+  // same version switch as the rest of the script.
+  lines.push(`${paths.radiusClient} print`);
   lines.push("/radius/incoming print");
   lines.push("/ppp/aaa print");
+  lines.push("/ip/firewall/filter print where comment~\"NETPID\"");
   lines.push("/interface/print");
   lines.push("");
   lines.push(c("Done. Confirm in NETPID: Dashboard > Network > this router."));
+  lines.push(
+    c("If any line above reported an error, stop and re-read it - the rest of "
+      + "the script will not have run either."),
+  );
   return lines.join("\n");
 }
 

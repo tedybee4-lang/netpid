@@ -30,7 +30,7 @@ export function ratePair(uploadKbps, downloadKbps) {
 // RouterOS quoting: wrap in double quotes, escape " and \ and newlines.
 export function rosQuote(value) {
   const s = String(value ?? "");
-  if (s !== "" && /^[A-Za-z0-9._:/@-]+$/.test(s)) return s;
+  if (s !== "" && /^[A-Za-z0-9._/@-]+$/.test(s)) return s;
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ")}"`;
 }
 
@@ -77,6 +77,8 @@ export function rosPaths(version) {
     radioName: v7 ? "wifi1" : "wlan1",
     dhcpLease: v7 ? "/ip/dhcp-server/lease" : "/ip/dhcp-server lease",
     // 7 added HttpOnly to the HotSpot cookie (6.46 backported it, older 6 not).
+    // v6 nests the RADIUS client under /ip; v7 promotes it to a top-level menu.
+    radiusClient: v7 ? "/radius" : "/ip radius",
     cookieHardening: v7,
   };
 }
@@ -147,12 +149,12 @@ export function buildRouterosSetup(o = {}) {
   );
   lines.push("");
 
-  lines.push(comment("3. RADIUS accounting client (PPP + HotSpot share one service)"));
+  lines.push(comment("3. RADIUS server - one entry serves PPPoE and HotSpot"));
   // Replace any previous stanza first so re-running the script is idempotent.
-  lines.push(`:do { /ip/radius remove [find comment=${rosQuote(`NETPID:${shortname}`)}] } on-error={}`);
+  lines.push(`:do { ${paths.radiusClient} remove [find comment=${rosQuote(`NETPID:${shortname}`)}] } on-error={}`);
   lines.push(
-    `/radius add service=ppp,hotspot address=${server} secret=${secret} ` +
-      `auth-port=${authPort} acct-port=${acctPort} timeout=1500ms${src} ` +
+    `${paths.radiusClient} add service=ppp,hotspot address=${server} secret=${secret} ` +
+      `authentication-port=${authPort} accounting-port=${acctPort} timeout=1500ms${src} ` +
       `comment=${rosQuote(`NETPID:${shortname}`)}`,
   );
   lines.push("");
@@ -168,18 +170,21 @@ export function buildRouterosSetup(o = {}) {
   }
   lines.push("");
 
-  lines.push(comment("5. HotSpot - captive-portal logins also authorize via RADIUS"));
-  for (const p of byName("hotspot")) {
-    const name = rosName(p.name, "hotspot-profile");
-    const limit = ratePair(p.upload_kbps, p.download_kbps);
-    const rate = limit ? ` rate-limit=${limit}` : "";
-    // HttpOnly on the session cookie is a 7.x property; on 6.x it is either
-    // absent or refused, so it is only emitted for v7.
-    const cookie = paths.cookieHardening ? " http-cookie-httponly=yes" : "";
-    lines.push(
-      `/ip hotspot profile set [find name=${rosQuote(name)}] use-radius=yes ` +
-        `accounting=yes interim-update=5m login-by=http-chap,http-pap,madius${rate}${cookie}`,
-    );
+  const hotspot = byName("hotspot");
+  if (hotspot.length) {
+    lines.push(comment("5. HotSpot - captive-portal logins also authorize via RADIUS"));
+    for (const p of hotspot) {
+      const name = rosName(p.name, "hotspot-profile");
+      const limit = ratePair(p.upload_kbps, p.download_kbps);
+      const rate = limit ? ` rate-limit=${limit}` : "";
+      // HttpOnly on the session cookie is a 7.x property; on 6.x it is either
+      // absent or refused, so it is only emitted for v7.
+      const cookie = paths.cookieHardening ? " http-cookie-httponly=yes" : "";
+      lines.push(
+        `/ip hotspot profile set [find name=${rosQuote(name)}] use-radius=yes ` +
+          `accounting=yes interim-update=5m login-by=http-chap,http-pap,madius${rate}${cookie}`,
+      );
+    }
   }
   lines.push("");
 
@@ -201,6 +206,15 @@ export function buildRouterosSetup(o = {}) {
   lines.push(comment("7. CoA - lets NETPID disconnect a user from the dashboard"));
   lines.push(
     `/radius incoming set accept=yes port=${coaPort} comment=${rosQuote(`NETPID:${shortname}`)}`,
+  );
+  // accept=yes is only half of it. The default input policy drops unsolicited
+  // UDP, so without this rule the listener is enabled and every Disconnect-Request
+  // is still discarded before it reaches it. Scoped to the RADIUS server.
+  lines.push(`:do { /ip/firewall/filter remove [find comment=${rosQuote(`NETPID:coa:${shortname}`)}] } on-error={}`);
+  lines.push(
+    `/ip/firewall/filter add chain=input action=accept protocol=udp ` +
+      `dst-port=${coaPort}${src ? ` src-address=${server}` : ""} ` +
+      `comment=${rosQuote(`NETPID:coa:${shortname}`)}`,
   );
   lines.push("");
 
@@ -225,14 +239,19 @@ export function buildRouterosSetup(o = {}) {
     lines.push("");
   }
 
-  lines.push(comment("Verify - all four should print without error"));
+  lines.push(comment("Verify - these should print without error"));
   lines.push(`/system resource print`);
-  lines.push(`/ip/radius print`);
+  lines.push(`${paths.radiusClient} print`);
   lines.push(`/radius/incoming print`);
   lines.push(`/ppp/aaa print`);
+  lines.push(`/ip/firewall/filter print where comment~"NETPID"`);
   lines.push("/interface/print");
   lines.push("");
   lines.push(comment("Done. Confirm in NETPID: Dashboard > Network > this router."));
+  lines.push(
+    comment("If any line above reported an error, stop and re-read it - the rest of "
+      + "the script will not have run either."),
+  );
   return lines.join("\n");
 }
 
@@ -276,6 +295,9 @@ export function buildWireguardScript(o = {}) {
   const name = rosName(o.routerName ?? "router", "netpid-router");
   const ifName = "netpid-wg";
   const port = o.listenPort ?? 51820;
+  // This script is RouterOS 7 only (see below), so the RADIUS client path is
+  // the v7 one. It still goes through rosPaths so the two cannot drift.
+  const paths = rosPaths("7");
   const L = [];
 
   L.push(c("=".repeat(62)));
@@ -348,9 +370,9 @@ export function buildWireguardScript(o = {}) {
       L.push(c(""));
       L.push(c("   Router as RADIUS CLIENT: auth + accounting to the VPS, over the"));
       L.push(c("   tunnel. The secret is the one already held for this NAS."));
-      L.push(`:do { /ip/radius remove [find comment=${rosQuote(WG_TAG)}] } on-error={}`);
+      L.push(`:do { ${paths.radiusClient} remove [find comment=${rosQuote(WG_TAG)}] } on-error={}`);
       L.push(
-        `/ip/radius add service=ppp,hotspot address=${o.vpsTunnelIp} ` +
+        `${paths.radiusClient} add service=ppp,hotspot address=${o.vpsTunnelIp} ` +
           `secret=${secret} comment=${rosQuote(WG_TAG)}`,
       );
       L.push("");
