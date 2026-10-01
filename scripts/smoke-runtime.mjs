@@ -337,6 +337,24 @@ async function run() {
       if (del.res && !del.res.ok) {
         console.log(`info cleanup warning for ${c.id}: ${String(del.text ?? "").slice(0, 120)}`);
       }
+
+      // Verify the payment rows are actually gone.
+      //
+      // Why this check exists: a payment orphaned by an earlier run went
+      // unnoticed for exactly this long. The end-of-run residue check only counts
+      // CUSTOMERS (see section 6), so a surviving payment was invisible — until
+      // it made /api/payments report total=1 with 0 rows and failed a pagination
+      // assertion on an unrelated code path. The DELETE above is fire-and-forget;
+      // if it is ever filtered, rejected or raced, nothing noticed. Asserting our
+      // own cleanup is the difference between a test that fails loudly and one
+      // that quietly poisons the next run.
+      const left = await rest(`payments?customer_id=eq.${c.id}&select=id`);
+      const n = (left.json ?? []).length;
+      check(
+        `smoke cleanup removed the payment rows it created for ${c.id}`,
+        n === 0,
+        `${n} row(s) survived and will orphan`,
+      );
     }
     if (created.length) console.log(`info cleaned up ${created.length} test customer row(s) and their payments`);
   }
