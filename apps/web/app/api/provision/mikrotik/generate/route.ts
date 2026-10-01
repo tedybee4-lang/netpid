@@ -49,7 +49,13 @@ export async function POST(req: Request) {
   }).select("id").single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const base = publicBaseUrl();
+  // The host the OPERATOR actually loaded, not whatever VERCEL_URL happens to
+  // say. Those two disagree in practice: a production dashboard was observed
+  // handing out a command pointing at a preview deployment, so the router
+  // fetched a script from a host that is deleted when its branch closes. The
+  // request origin is the host the browser just proved it can reach.
+  const origin = new URL(req.url).origin;
+  const base = origin || publicBaseUrl();
   const url = `${base}/api/provision/mikrotik/bootstrap/${token}`;
   // One line, so it survives a paste into the router terminal without wrapping.
   const command =

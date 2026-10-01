@@ -267,10 +267,18 @@ test("no value is concatenated into the URL with a raw space", () => {
   // "65536 KiB". RFC 3986 forbids a literal space in a URL and RouterOS has no
   // URL encoder, so the request never left the router.
   //
-  // Every value therefore goes through a [:split] on space and is rejoined with
-  // "+", which decodeParam() turns back into a space server side.
-  const encoded = BOOT.match(/:foreach npW in=\[:split \$\w+ " "\] do=\{/g) ?? [];
+  // Every value therefore goes through a character walk that swaps each space
+  // for "+", which decodeParam() turns back into a space server side.
+  //
+  // It used to be `[:foreach w in=[:split $v " "]`, which NEVER WORKED: there
+  // is no [:split function in RouterOS. The router parses the bracketed word as
+  // a command to run and answers "bad command name split". The source variable
+  // for each field is now named by the `[:len]` that seeds the walk.
+  const encoded = BOOT.match(/:local npL \[:len \$\w+\]/g) ?? [];
   assert.equal(encoded.length, 8, "every one of the eight values is space-encoded");
+  // The walk must not reach for a function outside the dialect.
+  assert.ok(!/\[:split/.test(BOOT.replace(/(^|\s)#.*$/gm, "")),
+    "[:split is not a RouterOS function and must not appear in code");
   for (const line of BOOT.split("\n")) {
     const t = line.replace(/(^|\s)#.*$/, "").trim();
     // Any line that appends a value to the URL must append $npS, the encoded
@@ -386,16 +394,16 @@ test("the register URL the router calls is reconstructed correctly", () => {
   assert.ok(base, "npUrl must be declared with the base URL");
   let url = base[1];
 
-  // Each field's source variable, taken from the [:split] that encodes it.
+  // Each field's source variable, taken from the [:len] that seeds its walk.
   const sourceFor = [];
   const lines = BOOT.split("\n");
   for (const [i, line] of lines.entries()) {
-    const m = /:foreach npW in=\[:split \$(\w+) " "\] do=\{/.exec(line);
+    const m = /:local npL \[:len \$(\w+)\]/.exec(line);
     if (!m) continue;
     // The append that follows this block uses $npS, the encoded buffer.
-    const append = lines.slice(i, i + 8).find((l) => l.startsWith(":set npUrl ($npUrl . "));
+    const append = lines.slice(i, i + 10).find((l) => l.startsWith(":set npUrl ($npUrl . "));
     const sep = /"([?&])([a-z]+)="/.exec(append ?? "");
-    sourceFor.push({ src: m[1], sep: sep[1], key: sep[2] });
+    sourceFor.push({ src: m[1], sep: sep?.[1], key: sep?.[2] });
   }
   assert.equal(sourceFor.length, 8, "every field is encoded before it is appended");
 
@@ -804,7 +812,10 @@ test("bootstrap uses :local, so a re-paste cannot inherit stale state", () => {
   const locals = [...BOOT.matchAll(/^:local\s+(\w+)/gm)].map((m) => m[1]);
   assert.ok(locals.length >= 5, `expected several locals, found ${locals.length}`);
   // Every local is cleared at the end so the router console is not littered.
-  assert.ok(locals.every((n) => BOOT.includes(`:set ${n} ""`)), "each local is reset");
+  // Counters are reset to 0 rather than "", so accept either form - what
+  // matters is that nothing is left holding a value from this run.
+  assert.ok(locals.every((n) => BOOT.includes(`:set ${n} ""`) || BOOT.includes(`:set ${n} 0`)),
+    "each local is reset");
 });
 
 // ---------------------------------------------------------------------------

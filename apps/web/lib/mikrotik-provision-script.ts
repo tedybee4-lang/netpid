@@ -130,9 +130,15 @@ export function buildBootstrapScript(opts: {
   c("SPACES ARE ENCODED, BECAUSE A RAW SPACE BREAKS THE FETCH.");
   c("'hAP lite', 'MIPS 24Kc V7.4' and '65536 KiB' all contain one. RFC 3986");
   c("forbids a literal space in a URL and /tool fetch rejects the whole request,");
-  c("so the report never leaves the router. RouterOS has no URL encoder, so");
-  c("[:split] on the space and rejoin with '+' stands in for %20. '+' decodes");
-  c("back to a space server side, so nothing is lost.");
+  c("so the report never leaves the router.");
+  c("");
+  c("THERE IS NO [:split] FUNCTION IN ROUTEROS. This is the fourth dialect");
+  c("failure, and the most misleading one: the router parses the word inside");
+  c("the brackets as a command to run and reports \"bad command name split\"");
+  c("with a line and column, which reads as though the value were malformed.");
+  c("There is no URL encoder either, so each field is walked one character at");
+  c("a time with [:len] and [:pick] and every space becomes '+'. The server");
+  c("decodes '+' back to a space, so nothing is lost.");
   c("");
   c("Only spaces are handled. A value containing &, ?, #, = or \" would still");
   c("corrupt the query string, but no board name, CPU string, RAM figure or");
@@ -145,18 +151,26 @@ export function buildBootstrapScript(opts: {
   ];
   p(`:local npUrl ${q(reg)}`);
   params.forEach(([k, v], i) => {
-    // npS is a per-field scratch buffer: split on space, rejoin with "+".
+    // Space -> '+' by walking the value one character at a time.
+    //
+    // The obvious `[:foreach w in=[:split $v " "]]` does not work: [:split is
+    // not in the RouterOS dialect at all. Everything used below - :local, :set,
+    // :while, :if, [:len] and [:pick] - is core, so there is nothing here that
+    // depends on a function the router might not have.
     p(`:local npS ""`);
-    // npW is scoped to this :foreach and DOES NOT EXIST AFTER IT CLOSES.
-    // Assigning to it outside the loop is a syntax error at the variable name,
-    // which is a line and column with no explanation - the third field
-    // failure of this kind, so it is worth stating plainly.
-    p(`:foreach npW in=[:split $${v} " "] do={`);
-    p(`  :if ([:len $npS] > 0) do={ :set npS ($npS . "+") }`);
-    p(`  :set npS ($npS . $npW)`);
+    p(`:local npC ""`);
+    p(`:local npI 0`);
+    p(`:local npL [:len $${v}]`);
+    p(`:while ($npI < $npL) do={`);
+    p(`  :set npC [:pick $${v} $npI ($npI + 1)]`);
+    p(`  :if ($npC = " ") do={ :set npS ($npS . "+") } else={ :set npS ($npS . $npC) }`);
+    p(`  :set npI ($npI + 1)`);
     p(`}`);
     p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $npS)`);
     p(`:set npS ""`);
+    p(`:set npC ""`);
+    p(`:set npI 0`);
+    p(`:set npL 0`);
   });
   p("");
   p(":do {");

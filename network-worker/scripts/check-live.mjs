@@ -132,6 +132,36 @@ for (const [i, raw] of lines.entries()) {
 }
 if (problems === 0) pass("no :set npW anywhere");
 
+// 7. No bracket function outside the known RouterOS dialect.
+//
+// FOUR field failures have come from a word inside [:...] that RouterOS does not
+// implement, or from a name that is not in scope:
+//
+//   line 60  an expression split across lines
+//   line 65  :set on a variable with no :local
+//   line 89  :set on a :foreach variable, out of scope after the loop
+//   line 83  [:split - "bad command name split"
+//
+// The last one is the trap: RouterOS reads the bracketed word as a command to
+// run, so an unknown function produces an error phrased like a bad value. This
+// list is the set of bracketed functions the generated script is allowed to
+// use, taken from the core dialect rather than from what the generator happens
+// to emit today.
+const DIALECT = new Set([
+  "len", "pick", "find", "toarray", "fromarray", "typeof", "tonum", "tostr",
+  "tobool", "toip", "tolen", "todefault",
+]);
+for (const [i, raw] of lines.entries()) {
+  const t = raw.replace(/(^|\s)#.*$/, "");
+  for (const m of t.matchAll(/\[:([a-z0-9]+)/gi)) {
+    const fn = m[1].toLowerCase();
+    if (!DIALECT.has(fn)) {
+      fail(`line ${i + 1}: "[:${m[1]}]" is not a RouterOS function, so the router reads it as a command name`);
+    }
+  }
+}
+if (problems === 0) pass("every [:function] is in the RouterOS dialect");
+
 console.log(problems === 0 ? "\n  ALL CHECKS PASSED" : `\n  ${problems} PROBLEM(S)`);
 // Give node a tick to close its handles; exiting immediately can trip an
 // assertion in libuv on Windows.
