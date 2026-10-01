@@ -267,6 +267,15 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   // RADIUS moved out of /ip in RouterOS 7; a v7 box answers
   // "bad command name radius" for the v6 path.
   const RM = v7 ? "/radius" : "/ip radius";
+  // THE SAME MOVE HAPPENED TO THE DHCP CLIENT, and it was missed here.
+  //
+  //   field report: bad command name dhcp-client (line 9 column 26)
+  //
+  // On 7.x the client lives at /ip/dhcp-client. /interface/dhcp-client is the
+  // 6.x path and does not exist, so the router parsed "dhcp-client" as a command
+  // to run - the same misleading shape as the [:split failure. Wireless is not
+  // the only thing that moved out of /interface in v7.
+  const DHCP = v7 ? "/ip dhcp-client" : "/interface dhcp-client";
   const wan = safeIface(o.wan);
   const hb = o.heartbeatName;
 
@@ -305,6 +314,10 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   p("");
   c("Only the named WAN is released. Every other member is left alone, so the LAN");
   c("keeps working while this runs.");
+  c("");
+  c("The release is checked first, so re-running the script does not report a");
+  c("move that is not happening. Note this one IS a remove: a WAN must not be a");
+  c("bridge member at all, so there is nothing to add it to.");
   p(`:if ([:len [/interface find name=${wan}]] = 0) do={`);
   p(`  :put "SKIP WAN: no interface named ${wan}."`);
   p("} else={");
@@ -313,8 +326,8 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   p(`    :put ("releasing " . ${q(wan)} . " from bridge " . $npWb)`);
   p(`    /interface bridge port remove [find interface=${wan}]`);
   p("  }");
-  p(`  :if ([:len [/interface dhcp-client find interface=${wan}]] = 0) do={`);
-  p(`    /interface dhcp-client add interface=${wan} disabled=no comment=${q(`${tag} wan-dhcp`)}`);
+  p(`  :if ([:len [${DHCP} find interface=${wan}]] = 0) do={`);
+  p(`    ${DHCP} add interface=${wan} disabled=no comment=${q(`${tag} wan-dhcp`)}`);
   p("  }");
   p(`  :put ("WAN " . ${q(wan)} . ": DHCP client present.")`);
   p("}");
@@ -326,21 +339,36 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   rule();
   p("");
   c("One bridge holds the customer ports. Ports named by the operator are");
-  c("moved into it; nothing else is. A port already enslaved elsewhere is");
-  c("reported in the dashboard before this script is produced.");
+  c("moved into it; nothing else is.");
   p(`:if ([:len [/interface bridge find name=${q(o.bridgeIface)}]] = 0) do={`);
   p(`  /interface bridge add name=${q(o.bridgeIface)} comment=${q(`${tag} bridge`)}`);
   p(`  :put ("bridge created: " . ${q(o.bridgeIface)})`);
   p("}");
+  p("");
+  c("A port is moved by ADDING it to the new bridge, not by removing it from");
+  c("the old one first. Adding moves it atomically; a remove-then-add leaves a");
+  c("window where the port is a member of no bridge at all.");
+  c("");
+  c("That window is not cosmetic. An operator driving the router over the network");
+  c("is usually connected THROUGH one of the ports being moved, so the remove");
+  c("drops the live session - observed in the field as \"Console does not");
+  c("respond\", which kills the terminal mid-script and leaves the box half");
+  c("configured. Adding straight to the target bridge never has that gap.");
   const allPorts = [...o.hotspotPorts, ...o.pppoePorts];
   for (const port of allPorts) {
     const sp = safeIface(port);
     p(`:do {`);
-    p(`  :if ([:len [/interface bridge port find interface=${sp}]] > 0) do={`);
-    p(`    /interface bridge port remove [find interface=${sp}]`);
+    p(`  :if ([:len [/interface bridge port find interface=${sp} where bridge=${q(o.bridgeIface)}]] = 0) do={`);
+    p(`    :if ([:len [/interface bridge port find interface=${sp}]] > 0) do={`);
+    p(`      :local npOld [/interface bridge port get [find interface=${sp}] bridge]`);
+    p(`      :put ("moving " . ${q(sp)} . " from " . $npOld . " to " . ${q(o.bridgeIface)})`);
+    p("    }");
+    // Adding a port that is already a member of another bridge moves it, and
+    // RouterOS does the detach and attach as one operation.
+    p(`    /interface bridge port add bridge=${q(o.bridgeIface)} interface=${sp} pvid=1 comment=${q(`${tag} port`)}`);
+    p("  } else={");
+    p(`    :put ("already in " . ${q(o.bridgeIface)} . ": " . ${q(sp)})`);
     p("  }");
-    p(`  /interface bridge port add bridge=${q(o.bridgeIface)} interface=${sp} pvid=1 comment=${q(`${tag} port`)}`);
-    p(`  :put ("bridge " . ${q(o.bridgeIface)} . " <- " . ${q(sp)})`);
     p("} on-error={");
     p(`  :put ("SKIP " . ${q(sp)} . ": could not be bridged.")`);
     p("}");

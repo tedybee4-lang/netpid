@@ -562,8 +562,8 @@ test("the configure script releases the WAN from its bridge before adding DHCP",
   // with no address on it: a dead uplink and no error anywhere.
   const idx = GEN.indexOf("/interface bridge port remove [find interface=");
   assert.ok(idx > -1, "the WAN must be removed from its bridge");
-  const dhcp = GEN.indexOf("/interface dhcp-client add interface=");
-  assert.ok(dhcp > -1, "a DHCP client is added to the WAN");
+  const dhcp = GEN.indexOf("/ip dhcp-client add interface=");
+  assert.ok(dhcp > -1, "a DHCP client is added to the WAN (v7 path)");
   assert.ok(idx < dhcp,
     "the port must leave the bridge BEFORE the DHCP client is added, or the WAN is unroutable");
 });
@@ -616,6 +616,56 @@ test("a bridged WAN is allowed and reported, not rejected", () => {
   // The real hard rules are untouched.
   assert.ok(!validateSelection({ mode: "HOTSPOT", wan_interface: "ether1", hotspot_interfaces: ["ether1"] }, DETECTED).ok,
     "a port still cannot be both the WAN and a HotSpot port");
+});
+
+test("the DHCP client path follows the RouterOS version", () => {
+  // Field report on a 7.21.5 hAP lite:
+  //
+  //   bad command name dhcp-client (line 9 column 26)
+  //
+  // The DHCP client moved out of /interface in RouterOS 7, exactly as RADIUS
+  // did. The v6 path does not exist on a v7 box, so the router parsed
+  // "dhcp-client" as a command to run - a missing menu reported as a bad value.
+  // RADIUS was already handled; the DHCP client was missed.
+  assert.match(GEN, /\/ip dhcp-client add interface=/,
+    "a v7 script must use /ip/dhcp-client");
+  assert.doesNotMatch(GEN, /\/interface dhcp-client/,
+    "/interface/dhcp-client is the 6.x path and does not exist on 7.x");
+  assert.match(GEN_V6, /\/interface dhcp-client add interface=/,
+    "a v6 script must use /interface/dhcp-client");
+  assert.doesNotMatch(GEN_V6, /\/ip dhcp-client/,
+    "/ip/dhcp-client is the 7.x path and does not exist on 6.x");
+});
+
+test("a customer port is moved into the target bridge, not removed then added", () => {
+  // Observed in the field: "Console does not respond" part way through the
+  // bridge section, which kills the operator's terminal mid-script and leaves
+  // the box half configured.
+  //
+  // A remove-then-add leaves a window where the port is a member of no bridge.
+  // An operator driving the router over the network is usually connected
+  // THROUGH one of the ports being moved, so that window drops the live
+  // session. Adding a port to the new bridge moves it in one operation and
+  // never has the gap.
+  const addIdx = GEN.indexOf("/interface bridge port add bridge=");
+  const removeIdx = GEN.indexOf("/interface bridge port remove [find interface=");
+  assert.ok(addIdx > -1, "customer ports are added to the target bridge");
+  // The WAN remove comes first in the script and is legitimate. Any remove
+  // AFTER the first bridge add would be a remove-then-add for a customer port.
+  const removes = [...GEN.matchAll(/\/interface bridge port remove \[find interface=/g)];
+  assert.equal(removes.length, 1,
+    "only the WAN is removed; customer ports are moved by adding");
+  assert.ok(removeIdx < addIdx, "the WAN is released before the bridge section adds ports");
+});
+
+test("both version-specific paths are asserted, not discovered in the field", () => {
+  // RADIUS and the DHCP client each broke a real router in turn, and both fail
+  // the same way: "bad command name X", which reads like a bad value rather
+  // than a missing menu. Asserting the known pairs here means a third move
+  // between 6 and 7 fails a test instead of a customer's router.
+  assert.doesNotMatch(GEN, /\/ip radius/, "v7 must not use the v6 /ip radius path");
+  assert.match(GEN, /\/radius add service/, "v7 uses /radius");
+  assert.match(GEN_V6, /\/ip radius add service/, "v6 uses /ip radius");
 });
 
 test("every mode demands its own ports", () => {
