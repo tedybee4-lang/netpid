@@ -58,8 +58,20 @@ export async function POST(req: Request) {
   const base = origin || publicBaseUrl();
   const url = `${base}/api/provision/mikrotik/bootstrap/${token}`;
   // One line, so it survives a paste into the router terminal without wrapping.
+  //
+  // The fetch is wrapped in :retry because /tool fetch fails with
+  // "SSL: internal error (6)" on RouterOS 7 when its TLS connection pool wedges.
+  // It is transient and the server is fine - the same URL answered 200 on every
+  // attempt from outside while the router was reporting the failure. Retrying
+  // clears it, so a single attempt would fail the whole provisioning for a
+  // reason that has nothing to do with the router's configuration.
+  //
+  // verify-certificate is left ON. Turning it off would also silence the error,
+  // // and at the cost of accepting any certificate for the callback that
+  // // permanently installs a heartbeat on the box.
   const command =
-    `/tool fetch mode=https url=${url} dst-path=netpid_init.rsc; `
+    `:do { :retry command={/tool fetch mode=https url=${url} dst-path=netpid_init.rsc} `
+    + `delay=3s max=3 } on-error={ :put "NETPID: download failed after 3 attempts." }; `
     + `:delay 2s; /import netpid_init.rsc`;
 
   return NextResponse.json({

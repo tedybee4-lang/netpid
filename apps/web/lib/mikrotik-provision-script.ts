@@ -174,10 +174,15 @@ export function buildBootstrapScript(opts: {
   });
   p("");
   p(":do {");
-  p("  /tool fetch mode=https keep-result=no url=$npUrl");
+  // :retry, for the same reason the bootstrap command retries: /tool fetch on
+  // RouterOS 7 intermittently answers "SSL: internal error (6)" when its TLS
+  // connection pool is wedged, and it clears on a subsequent attempt. The
+  // report is the one thing this script exists to do, so one transient failure
+  // should not cost the operator the whole run.
+  p("  :retry command={/tool fetch mode=https keep-result=no url=$npUrl} delay=3s max=3");
   p("  :put \"NETPID: hardware reported. Check the dashboard.\"");
   p("} on-error={");
-  p("  :put \"NETPID: report FAILED. The router is fine; the upload did not go.\"");
+  p("  :put \"NETPID: report FAILED after 3 attempts. The router is fine; the upload did not go.\"");
   p("  :put \"Print this URL and open it in a browser to see why:\"");
   // Print the URL that actually failed. Printing an empty line, as an
   // undeclared variable did, tells the operator nothing at all.
