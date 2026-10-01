@@ -1,29 +1,8 @@
 import Link from "next/link";
 import { loadDashboard } from "@/lib/dashboard";
 import { AreaChart, BarChart, Donut, RankedBars } from "@/components/Charts";
+import { Metric } from "@/components/PageShell";
 import { ago, bytes, duration, kes, num, statusTone } from "@/lib/format";
-
-function Stat({
-  label, value, sub, tone = "default", href,
-}: {
-  label: string; value: string; sub?: string;
-  tone?: "default" | "ok" | "warn" | "bad" | "brand";
-  href?: string;
-}) {
-  const accents: Record<string, string> = {
-    default: "before:bg-slate-300", ok: "before:bg-emerald-500",
-    warn: "before:bg-amber-500", bad: "before:bg-red-500", brand: "before:bg-indigo-500",
-  };
-  const body = (
-    <div className={`stat before:absolute before:inset-x-5 before:top-0 before:h-1
-      before:rounded-full ${accents[tone]}`}>
-      <p className="stat-label">{label}</p>
-      <p className="stat-value">{value}</p>
-      {sub && <p className="stat-sub">{sub}</p>}
-    </div>
-  );
-  return href ? <Link href={href} className="block transition hover:-translate-y-0.5">{body}</Link> : body;
-}
 
 function delta(now: number, before: number): { text: string; bad: boolean } {
   if (!before) return { text: "No prior month to compare", bad: false };
@@ -31,6 +10,23 @@ function delta(now: number, before: number): { text: string; bad: boolean } {
   if (pct === 0) return { text: "Flat vs last month", bad: false };
   return { text: `${pct > 0 ? "+" : ""}${pct}% vs last month`, bad: pct < 0 };
 }
+
+/**
+ * Operations-first shortcuts. Every one of these is a link to a route that
+ * already exists — nothing here invents a new destination, and nothing is
+ * duplicated from the sidebar. Ordered by how often an operator reaches for it,
+ * not alphabetically.
+ */
+const ACTIONS = [
+  { href: "/dashboard/customers/new", label: "Add customer" },
+  { href: "/dashboard/payments", label: "Verify payment" },
+  { href: "/dashboard/network/routers/new", label: "Add router" },
+  { href: "/dashboard/packages/new", label: "New package" },
+  { href: "/dashboard/network/ip-pools", label: "IP pools" },
+  { href: "/dashboard/sms", label: "Send SMS" },
+  { href: "/dashboard/settings/mpesa", label: "Payment method" },
+  { href: "/dashboard/page-builder", label: "Branding" },
+] as const;
 
 export default async function DashboardPage() {
   const d = await loadDashboard();
@@ -52,13 +48,53 @@ export default async function DashboardPage() {
 
   const rev = delta(d.kpi.revenueMonth, d.kpi.revenueLastMonth);
 
+  // Every alert below is derived from a value loadDashboard() already returned.
+  // Nothing is hardcoded and nothing is inferred: if a number is not in the
+  // payload, there is no alert for it.
+  const alerts: { text: string; href: string; tone: "bad" | "warn" }[] = [];
+  if (d.kpi.routersTotal === 0) {
+    alerts.push({ text: "No routers yet — customers cannot connect", href: "/dashboard/network/routers/new", tone: "bad" });
+  } else if (d.kpi.routersOnline < d.kpi.routersTotal) {
+    alerts.push({
+      text: `${num(d.kpi.routersTotal - d.kpi.routersOnline)} of ${num(d.kpi.routersTotal)} routers are not reporting`,
+      href: "/dashboard/network", tone: "bad",
+    });
+  }
+  if (d.kpi.pendingPayments > 0) {
+    alerts.push({
+      text: `${num(d.kpi.pendingPayments)} payment${d.kpi.pendingPayments === 1 ? "" : "s"} awaiting M-Pesa confirmation`,
+      href: "/dashboard/payments", tone: "warn",
+    });
+  }
+  if (d.kpi.expiringSoon > 0) {
+    alerts.push({
+      text: `${num(d.kpi.expiringSoon)} customer${d.kpi.expiringSoon === 1 ? "" : "s"} expire within 7 days`,
+      href: "/dashboard/customers?status=active", tone: "warn",
+    });
+  }
+  if (d.kpi.smsFailed > 0) {
+    alerts.push({ text: `${num(d.kpi.smsFailed)} SMS failed today`, href: "/dashboard/sms", tone: "bad" });
+  }
+
+  const networkOk = d.kpi.routersTotal > 0 && d.kpi.routersOnline === d.kpi.routersTotal;
+
   return (
-    <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Dashboard</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {d.isp.name} · live from your ISP only (RLS enforced)
+    <main className="mx-auto max-w-[1400px] px-4 py-5 sm:px-6 lg:px-8">
+      {/* Identity + live service status first. An operator opening this on a
+          phone needs to know whose account this is and whether the network is
+          up, without scrolling. */}
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-extrabold tracking-tight text-slate-900 sm:text-2xl">
+            {d.isp.name}
+          </h1>
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500">
+            <span>Dashboard</span>
+            <span aria-hidden="true" className="text-slate-300">·</span>
+            <span className={`badge ${networkOk ? "badge-ok" : "badge-warn"}`}>
+              {d.kpi.routersTotal === 0 ? "No routers"
+                : networkOk ? "Network healthy" : "Network degraded"}
+            </span>
           </p>
         </div>
         <div className="flex gap-2">
@@ -67,32 +103,62 @@ export default async function DashboardPage() {
         </div>
       </header>
 
-      <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Collected today" value={kes(d.kpi.revenueToday)}
+      {/* Alerts, rendered only when something is genuinely wrong, so a healthy
+          account sees none rather than a row of reassuring green. */}
+      {alerts.length > 0 && (
+        <section aria-label="Needs attention" className="mt-4 grid gap-2 sm:grid-cols-2">
+          {alerts.map((a) => (
+            <Link key={a.text} href={a.href}
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition hover:underline ${
+                a.tone === "bad"
+                  ? "border-red-200 bg-red-50 text-red-800"
+                  : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+              <span aria-hidden="true" className="font-black">{a.tone === "bad" ? "!" : "▲"}</span>
+              {a.text}
+            </Link>
+          ))}
+        </section>
+      )}
+
+      {/* Operations-first shortcuts, all pointing at routes that already exist.
+          Horizontal scroll on a phone rather than wrap: eight wrapped buttons
+          push every metric below two screens. */}
+      <nav aria-label="Common actions" className="mt-4 -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <ul className="flex w-max gap-2 sm:w-auto sm:flex-wrap">
+          {ACTIONS.map((a) => (
+            <li key={a.href}>
+              <Link href={a.href} className="btn-ghost btn-sm whitespace-nowrap">{a.label}</Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Collected today" value={kes(d.kpi.revenueToday)}
           sub={d.kpi.pendingPayments ? `${num(d.kpi.pendingPayments)} payments pending` : "No pending payments"}
           tone="ok" href="/dashboard/payments" />
-        <Stat label="Collected this month" value={kes(d.kpi.revenueMonth)} sub={rev.text}
+        <Metric label="Collected this month" value={kes(d.kpi.revenueMonth)} sub={rev.text}
           tone={rev.bad ? "bad" : "brand"} href="/dashboard/payments" />
-        <Stat label="Customers" value={num(d.kpi.activeCustomers)}
+        <Metric label="Active customers" value={num(d.kpi.activeCustomers)}
           sub={`${num(d.kpi.totalCustomers)} total · ${num(d.kpi.expiredCustomers)} expired`}
           tone={d.kpi.expiredCustomers > 0 ? "warn" : "default"} href="/dashboard/customers" />
-        <Stat label="Online right now" value={num(d.kpi.onlineNow)}
+        <Metric label="Online right now" value={num(d.kpi.onlineNow)}
           sub="From RADIUS accounting only" tone="ok" href="/dashboard/network/sessions" />
       </section>
 
-      <section className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Routers online" value={`${d.kpi.routersOnline} / ${d.kpi.routersTotal}`}
+      <section className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Routers online" value={`${d.kpi.routersOnline} / ${d.kpi.routersTotal}`}
           sub={d.kpi.routersTotal ? "Health reported by the worker" : "No routers yet"}
           tone={d.kpi.routersTotal === 0 ? "warn"
             : d.kpi.routersOnline === d.kpi.routersTotal ? "ok" : "warn"}
           href="/dashboard/network" />
-        <Stat label="Expiring in 7 days" value={num(d.kpi.expiringSoon)}
+        <Metric label="Expiring in 7 days" value={num(d.kpi.expiringSoon)}
           sub="Renew or they will be disconnected" tone={d.kpi.expiringSoon ? "warn" : "default"}
           href="/dashboard/customers?status=active" />
-        <Stat label="SMS today" value={num(d.kpi.smsSent)}
+        <Metric label="SMS today" value={num(d.kpi.smsSent)}
           sub={d.kpi.smsFailed ? `${num(d.kpi.smsFailed)} failed` : "None failed"}
           tone={d.kpi.smsFailed ? "bad" : "default"} href="/dashboard/sms" />
-        <Stat label="Pending payments" value={num(d.kpi.pendingPayments)}
+        <Metric label="Pending payments" value={num(d.kpi.pendingPayments)}
           sub="Awaiting M-Pesa confirmation" tone={d.kpi.pendingPayments ? "warn" : "default"}
           href="/dashboard/payments" />
       </section>
@@ -118,7 +184,7 @@ export default async function DashboardPage() {
             </Link>
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {d.routers.slice(0, 8).map((r) => (
               <Link key={r.id} href={`/dashboard/network/routers/${r.id}`}
                 className="stat transition hover:-translate-y-0.5">
@@ -153,7 +219,7 @@ export default async function DashboardPage() {
       </section>
 
       {/* Charts ---------------------------------------------------------- */}
-      <section className="mt-6 grid gap-4 lg:grid-cols-2">
+      <section className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="card">
           <h2 className="panel-title">Monthly sales</h2>
           <p className="mb-3 mt-1 text-xs text-slate-500">Completed payments per month</p>

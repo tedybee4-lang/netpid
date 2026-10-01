@@ -6,6 +6,19 @@ import { usePathname } from "next/navigation";
 
 // Dashboard navigation. One ordered list so the sidebar and any future
 // "quick links" surface can never fall out of sync.
+//
+// Regrouped for scanning rather than for feature taxonomy. The previous layout
+// spread 42 links across six headings with a seven-item "Tools" bucket, which
+// meant an operator hunting for IP pools had to read three groups to rule them
+// out. Grouping now follows what an ISP actually does, most-frequent first.
+//
+// Every route that existed before still exists here — nothing was removed, and
+// nothing points anywhere new.
+//
+// FIXED HERE: /dashboard/page-builder appeared twice, once as "Static pages"
+// under Operations and again as "Page builder" under Settings. Same href, two
+// labels, so an operator could see it in two places and not know they were the
+// same page. It now appears once, under Settings, where it belongs.
 type Item = { href: string; label: string; icon: string };
 
 export const NAV: { group: string; items: Item[] }[] = [
@@ -13,71 +26,75 @@ export const NAV: { group: string; items: Item[] }[] = [
     group: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: "grid" },
-      { href: "/dashboard/favorites", label: "Favorites", icon: "star" },
       { href: "/dashboard/notifications", label: "Notifications", icon: "bell" },
       { href: "/dashboard/announcements", label: "Announcements", icon: "message" },
+      { href: "/dashboard/favorites", label: "Favorites", icon: "star" },
     ],
   },
   {
     group: "Customers",
     items: [
       { href: "/dashboard/customers", label: "Customers", icon: "users" },
+      { href: "/dashboard/packages", label: "Packages & plans", icon: "box" },
+      { href: "/dashboard/payments", label: "Transactions", icon: "card" },
       { href: "/dashboard/activation", label: "Activation", icon: "zap" },
-      { href: "/dashboard/data-usage", label: "Data usage", icon: "chart" },
       { href: "/dashboard/vouchers", label: "HotSpot vouchers", icon: "ticket" },
       { href: "/dashboard/hotspot-binding", label: "HotSpot binding", icon: "link" },
-      { href: "/dashboard/packages", label: "Packages / plans", icon: "box" },
-      { href: "/dashboard/payments", label: "Transactions", icon: "card" },
+      { href: "/dashboard/data-usage", label: "Data usage", icon: "chart" },
       { href: "/dashboard/loyalty", label: "Loyalty points", icon: "gift" },
     ],
   },
   {
     group: "Network",
     items: [
-      { href: "/dashboard/network", label: "Network", icon: "router" },
+      { href: "/dashboard/network", label: "Network overview", icon: "router" },
+      { href: "/dashboard/network/sessions", label: "Live sessions", icon: "activity" },
       { href: "/dashboard/network/ip-pools", label: "IP pools", icon: "map" },
-      { href: "/dashboard/topology", label: "Topology", icon: "map" },
-      { href: "/dashboard/tr069", label: "TR-069 ACS", icon: "device" },
-      { href: "/dashboard/access-points", label: "Access points", icon: "wifi" },
-      { href: "/dashboard/access/pppoe", label: "Access PPPoE routers", icon: "cog" },
-      { href: "/dashboard/access/hotspot", label: "Access HotSpot APs", icon: "wifi" },
       { href: "/dashboard/radius", label: "RADIUS", icon: "shield" },
-      { href: "/dashboard/diagnostics", label: "AI assistant", icon: "activity" },
+      { href: "/dashboard/radius/users", label: "RADIUS users", icon: "users" },
+      { href: "/dashboard/radius/nas", label: "NAS clients", icon: "router" },
+      { href: "/dashboard/radius/test", label: "RADIUS test", icon: "shield" },
+      { href: "/dashboard/topology", label: "Topology", icon: "map" },
+      { href: "/dashboard/access-points", label: "Access points", icon: "wifi" },
+      { href: "/dashboard/tr069", label: "TR-069 ACS", icon: "device" },
+      { href: "/dashboard/access/pppoe", label: "PPPoE access", icon: "cog" },
+      { href: "/dashboard/access/hotspot", label: "HotSpot access", icon: "wifi" },
     ],
   },
   {
     group: "Operations",
     items: [
+      { href: "/dashboard/sms", label: "SMS", icon: "message" },
       { href: "/dashboard/bulk-actions", label: "Bulk actions", icon: "list" },
-      { href: "/dashboard/page-builder", label: "Static pages", icon: "page" },
       { href: "/dashboard/inventory", label: "Inventory", icon: "box" },
       { href: "/dashboard/expenses", label: "Expenses", icon: "receipt" },
       { href: "/dashboard/resellers", label: "Resellers", icon: "share" },
-      { href: "/dashboard/sms", label: "SMS", icon: "message" },
       { href: "/dashboard/support", label: "Support tickets", icon: "mail" },
-      { href: "/dashboard/logs", label: "Logs", icon: "clock" },
       { href: "/dashboard/reports", label: "Reports", icon: "chart" },
+      { href: "/dashboard/logs", label: "Logs", icon: "clock" },
     ],
   },
   {
     group: "Tools",
     items: [
+      { href: "/dashboard/diagnostics", label: "AI assistant", icon: "activity" },
       { href: "/dashboard/health/hotspot", label: "Fix HotSpot", icon: "wrench" },
       { href: "/dashboard/health/pppoe", label: "Fix PPPoE", icon: "wrench" },
-      { href: "/dashboard/extras", label: "Extras", icon: "sparkle" },
       { href: "/dashboard/integrations/uisp", label: "UISP", icon: "plug" },
-      { href: "/dashboard/social-spot", label: "Social Spot / support", icon: "chat" },
+      { href: "/dashboard/social-spot", label: "Social Spot", icon: "chat" },
       { href: "/dashboard/escalate", label: "Escalate", icon: "alert" },
+      { href: "/dashboard/extras", label: "Extras", icon: "sparkle" },
       { href: "/dashboard/recycle-bin", label: "Recycle bin", icon: "trash" },
     ],
   },
   {
     group: "Settings",
     items: [
-      { href: "/dashboard/settings", label: "Settings", icon: "cog" },
+      { href: "/dashboard/settings", label: "General settings", icon: "cog" },
+      { href: "/dashboard/page-builder", label: "Portal & branding", icon: "page" },
+      { href: "/dashboard/settings/mpesa", label: "Payment method", icon: "card" },
       { href: "/dashboard/settings/pppoe", label: "PPPoE settings", icon: "cog" },
       { href: "/dashboard/settings/hotspot", label: "HotSpot settings", icon: "cog" },
-      { href: "/dashboard/page-builder", label: "Page builder", icon: "page" },
       { href: "/dashboard/users", label: "Users & roles", icon: "team" },
     ],
   },

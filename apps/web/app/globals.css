@@ -24,45 +24,51 @@
 }
 
 @layer components {
-  /* Surfaces ------------------------------------------------------------ */
+  /* Surfaces ------------------------------------------------------------
+     Tighter and squarer than the previous rounded-2xl/p-5. Two reasons:
+     an operator scanning a dense console wants more rows above the fold, and
+     the softer 16px radius is what makes a dashboard read as generic. Card
+     geometry should recede so the numbers carry the page. */
   .card {
-    @apply rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm;
+    @apply rounded-xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/40;
   }
-  .card-flush { @apply overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm; }
-  .panel-title { @apply flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-slate-500; }
+  .card-flush { @apply overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/40; }
+  .panel-title { @apply flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500; }
 
-  /* Buttons ------------------------------------------------------------ */
+  /* Buttons ------------------------------------------------------------
+     min-h-11 (44px) keeps every control above the 44px touch target even on
+     a small phone, without changing the desktop rhythm. */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2
            text-sm font-semibold text-white shadow-sm transition
            hover:bg-indigo-700 focus:outline-none focus-visible:ring-2
            focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:opacity-50;
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200
-           bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-200
+           bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition
            hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50;
   }
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-red-200
-           bg-red-50 px-4 py-2.5 text-sm font-semibold text-red-700 transition
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-200
+           bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition
            hover:bg-red-100 disabled:opacity-50;
   }
-  .btn-sm { @apply rounded-lg px-3 py-1.5 text-xs; }
+  .btn-sm { @apply min-h-9 rounded-md px-3 py-1.5 text-xs; }
 
   /* Forms -------------------------------------------------------------- */
   .input {
-    @apply w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900
+    @apply w-full min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900
            outline-none transition placeholder:text-slate-400
            focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50;
   }
-  .label { @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500; }
+  .label { @apply mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500; }
   .hint { @apply mt-1 text-xs text-slate-500; }
-  .err-box { @apply rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700; }
-  .ok-box { @apply rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800; }
+  .err-box { @apply rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700; }
+  .ok-box { @apply rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800; }
 
   /* Badges ------------------------------------------------------------- */
-  .badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold; }
+  .badge { @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide; }
   .badge-ok { @apply bg-emerald-100 text-emerald-700; }
   .badge-warn { @apply bg-amber-100 text-amber-800; }
   .badge-bad { @apply bg-red-100 text-red-700; }
@@ -70,27 +76,33 @@
   .badge-info { @apply bg-indigo-100 text-indigo-700; }
 
   /* Stat tiles --------------------------------------------------------- */
-  .stat { @apply relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm; }
-  .stat-label { @apply text-xs font-bold uppercase tracking-wide text-slate-500; }
-  .stat-value { @apply mt-2 text-2xl font-extrabold tracking-tight text-slate-900 tnum; }
-  .stat-sub { @apply mt-1 text-xs text-slate-500; }
+  .stat { @apply relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/40; }
+  .stat-label { @apply text-[11px] font-bold uppercase tracking-wider text-slate-500; }
+  .stat-value { @apply mt-1.5 text-2xl font-extrabold leading-none tracking-tight text-slate-900 tnum; }
+  .stat-sub { @apply mt-1.5 text-xs text-slate-500; }
 
-  /* Tables ------------------------------------------------------------- */
+  /* Tables -------------------------------------------------------------
+     py-2.5 rather than py-3: the existing responsive pattern is a horizontal
+     scroll wrapper (PageShell's Table), so rows stay legible on a phone
+     instead of being shrunk to fit. */
   .table { @apply w-full text-sm; }
   .table thead th {
-    @apply whitespace-nowrap px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-500;
+    @apply whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-left text-[11px] font-bold
+           uppercase tracking-wider text-slate-500;
   }
-  .table tbody td { @apply whitespace-nowrap px-4 py-3 text-slate-700; }
-  .table tbody tr { @apply border-t border-slate-100 transition hover:bg-slate-50/70; }
+  .table tbody td { @apply whitespace-nowrap px-4 py-2.5 text-slate-700; }
+  .table tbody tr { @apply border-t border-slate-100 transition hover:bg-slate-50; }
 
-  /* Shell -------------------------------------------------------------- */
+  /* Shell --------------------------------------------------------------
+     min-h-10 keeps rail links tappable; the active state carries a left
+     accent bar instead of a filled pill so the rail stays quiet. */
   .shell-link {
-    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300
+    @apply flex min-h-10 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-300
            transition hover:bg-white/10 hover:text-white;
   }
-  .shell-link-active { @apply bg-indigo-600 text-white shadow-sm hover:bg-indigo-600 hover:text-white; }
+  .shell-link-active { @apply bg-white/10 text-white hover:bg-white/10 hover:text-white; }
   .shell-heading {
-    @apply px-3 pb-1 pt-5 text-[11px] font-bold uppercase tracking-wider text-slate-500;
+    @apply px-3 pb-1 pt-5 text-[10px] font-bold uppercase tracking-widest text-slate-500;
   }
 
   /* Code / RouterOS ----------------------------------------------------- */
