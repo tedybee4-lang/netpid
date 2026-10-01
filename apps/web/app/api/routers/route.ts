@@ -3,101 +3,16 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { resolveIsp } from "@/lib/isp";
 import { encryptSecret, randomSecret, checkRateLimit } from "@/lib/secrets";
 import { createRouterSchema } from "@/lib/validation";
-// One generator for both provisioning paths, so a router added by hand and
-// one added by script are configured identically:
-//   * manual UI add   -> this file (inline, typed copy)
-//   * script-only CLI -> network-worker/scripts/provision-router.mjs
-// Both copies are generated from network-worker/src/routeros.mjs; keep the
-// rate-pair rule (upload FIRST — "512k/5120k") in sync if you touch either.
-function ratePair(uploadKbps: number | null | undefined, downloadKbps: number | null | undefined): string | null {
-  const up = Math.max(0, Math.floor(Number(uploadKbps) || 0));
-  const down = Math.max(0, Math.floor(Number(downloadKbps) || 0));
-  if (up <= 0 && down <= 0) return null;
-  const rx = up > 0 ? up : down;
-  const tx = down > 0 ? down : up;
-  return `${rx}k/${tx}k`;
-}
-
-function rosQuote(value: string | number | null | undefined): string {
-  const s = String(value ?? "");
-  if (s !== "" && /^[A-Za-z0-9._:/@-]+$/.test(s)) return s;
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ")}"`;
-}
-
-function rosName(value: string | null | undefined, fallback = "netpid"): string {
-  const s = String(value ?? "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-  return s || fallback;
-}
-
-function buildRouterosSetup(o: {
-  shortname?: string; radiusServer?: string; secret?: string; routerIp?: string;
-  authPort?: number; acctPort?: number; coaPort?: number; identity?: string;
-  profiles?: { name: string; kind?: string; pool?: string; download_kbps?: number; upload_kbps?: number }[];
-}): string {
-  const shortname = rosName(o.shortname, "netpid-nas");
-  const server = rosQuote(o.radiusServer ?? "");
-  const secret = rosQuote(o.secret ?? "");
-  const authPort = Number(o.authPort) || 1812;
-  const acctPort = Number(o.acctPort) || 1813;
-  const coaPort = Number(o.coaPort) || 3799;
-  const src = o.routerIp ? ` src-address=${rosQuote(o.routerIp)}` : "";
-  const profiles = Array.isArray(o.profiles) ? o.profiles : [];
-  const byName = (kind: string) =>
-    profiles.filter((p) => String(p.kind ?? "pppoe").toLowerCase() === kind);
-  const lines = [
-    `# NETPID setup for ${shortname} (RouterOS CLI — paste in a terminal)`,
-    `# RADIUS: ${o.radiusServer} auth=${authPort} acct=${acctPort}`,
-  ];
-  if (o.identity) lines.push(`# Identity : ${o.identity}`);
-  if (o.routerIp) lines.push(`# Source   : ${o.routerIp} (presented to RADIUS as NAS-IP-Address)`);
-  lines.push("");
-  lines.push("# 1. RADIUS accounting client (PPP + HotSpot share one service)");
-  lines.push(`:do { /ip/radius remove [find comment=${rosQuote(`NETPID:${shortname}`)}] } on-error={}`);
-  lines.push(
-    `/radius add service=ppp,hotspot address=${server} secret=${secret} ` +
-      `auth-port=${authPort} acct-port=${acctPort} timeout=1500ms${src} ` +
-      `comment=${rosQuote(`NETPID:${shortname}`)}`,
-  );
-  lines.push("");
-  lines.push("# 2. PPPoE — credentials go to RADIUS, accounting comes back");
-  lines.push("/ppp aaa set use-radius=yes accounting=yes interim-update=5m");
-  for (const p of byName("pppoe")) {
-    const name = rosName(p.name, "pppoe-profile");
-    const limit = ratePair(p.upload_kbps, p.download_kbps);
-    const pool = p.pool ? ` remote-address=${rosQuote(p.pool)}` : "";
-    lines.push(`/ppp profile set [find name=${rosQuote(name)}]${pool} use-radius=yes${limit ? ` rate-limit=${limit}` : ""}`);
-  }
-  lines.push("");
-  lines.push("# 3. HotSpot — captive-portal logins also authorize via RADIUS");
-  for (const p of byName("hotspot")) {
-    const name = rosName(p.name, "hotspot-profile");
-    const limit = ratePair(p.upload_kbps, p.download_kbps);
-    lines.push(
-      `/ip hotspot profile set [find name=${rosQuote(name)}] use-radius=yes ` +
-        `accounting=yes interim-update=5m login-by=http-chap,http-pap,madius${limit ? ` rate-limit=${limit}` : ""}`,
-    );
-  }
-  lines.push("");
-  const capped = profiles.filter((p) => ratePair(p.upload_kbps, p.download_kbps));
-  if (capped.length) {
-    lines.push("# 4. Simple queues — one per profile (upload/download, upload first)");
-    for (const p of capped) {
-      const name = rosName(`netpid-${p.name}`, "netpid-queue");
-      lines.push(`:do { /queue simple remove [find name=${rosQuote(name)}] } on-error={}`);
-      lines.push(
-        `/queue simple add name=${rosQuote(name)} target=0.0.0.0/0 ` +
-          `max-limit=${ratePair(p.upload_kbps, p.download_kbps)} ` +
-          `queue=default/default comment=${rosQuote(`NETPID:${p.name}`)}`,
-      );
-    }
-    lines.push("");
-  }
-  lines.push("# 5. CoA — lets NETPID disconnect a user from the dashboard");
-  lines.push(`/radius incoming set accept=yes port=${coaPort} comment=${rosQuote(`NETPID:${shortname}`)}`);
-  lines.push("");
-  lines.push("# Done. Confirm in NETPID: Dashboard > Network > this router.");
-  return lines.join("\n");
-}
+// The RouterOS script is generated by the single canonical builder in
+// @/lib/routeros - the same one the quick-add path and the worker use.
+//
+// This file used to carry its OWN inline copy of the generator, hand-kept in
+// sync by a comment asking future readers to remember. It drifted: it kept the
+// RouterOS 6 "/ip/radius" path, the non-existent "auth-port"/"acct-port"
+// properties, the unquoted-colon quoting bug and an invalid "comment" on
+// /radius incoming. Every one of those was found by a real hAP lite rejecting
+// the pasted script, not by review. One builder, imported, cannot drift.
+import { buildRouterosSetup } from "@/lib/routeros";
 
 
 // GET /api/routers — list (passwords never returned)

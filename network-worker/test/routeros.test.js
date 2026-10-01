@@ -3,6 +3,8 @@
 // and one who gets 5 Mbps down, so it is pinned by test rather than by review.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { buildCustomerQueue, buildRouterosSetup, normalizeRosVersion, ratePair, rosName, rosPaths, rosQuote } from "../src/routeros.mjs";
 
@@ -93,6 +95,45 @@ test("verify block uses paths that exist on the target version", () => {
   assert.doesNotMatch(v7, /^\/ip\/radius print$/m);
   const v6 = buildRouterosSetup({ shortname: "a", radiusServer: "10.0.0.5", secret: "x", rosVersion: "6" });
   assert.match(v6, /^\/ip radius print$/m);
+});
+
+test("/radius incoming is a settings singleton and takes no comment", () => {
+  // Found on a real hAP lite: `set ... comment="NETPID:..."` is not a property
+  // of that menu, so the line died with "expected end of command (column 43)"
+  // and `accept` stayed no, i.e. CoA silently never worked. Its only settings
+  // are accept, port and vrf.
+  for (const v of ["6", "7"]) {
+    const s = buildRouterosSetup({
+      shortname: "TEVENN", radiusServer: "10.0.0.5", secret: "x", rosVersion: v,
+    });
+    assert.match(s, /^\/radius incoming set accept=yes port=3799$/m);
+    assert.doesNotMatch(s, /\/radius incoming set[^\n]*comment=/,
+      "/radius incoming has no comment property in any RouterOS version");
+  }
+});
+
+test("there is exactly one RouterOS script generator in the web app", () => {
+  // A third inline copy lived in app/api/routers/route.ts and had drifted with
+  // every bug this file's tests now cover. A copy cannot be kept in sync by a
+  // comment, so it was deleted in favour of importing @/lib/routeros.
+  const hits = [];
+  const root = join(process.cwd(), "..", "apps", "web");
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === ".next" || e.name.startsWith(".")) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(e.name) && !p.includes(`${join("app", "dashboard", "network", "routers", "[id]")}`)) {
+        const src = readFileSync(p, "utf8");
+        if (/function\s+buildRouterosSetup|const\s+buildRouterosSetup\s*=/.test(src)
+          && !p.endsWith(join("lib", "routeros.ts"))) {
+          hits.push(p.replace(root, "apps/web"));
+        }
+      }
+    }
+  };
+  walk(root);
+  assert.deepEqual(hits, [], `duplicate script generator(s) found: ${hits.join(", ")}`);
 });
 
 test("normalizeRosVersion accepts the shapes an operator actually types", () => {

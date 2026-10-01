@@ -204,9 +204,10 @@ export function buildRouterosSetup(o = {}) {
   }
 
   lines.push(comment("7. CoA - lets NETPID disconnect a user from the dashboard"));
-  lines.push(
-    `/radius incoming set accept=yes port=${coaPort} comment=${rosQuote(`NETPID:${shortname}`)}`,
-  );
+  // /radius/incoming is a SETTINGS singleton with only accept, port and vrf.
+  // Setting "comment" on it is not a property, so the line was rejected and CoA
+  // stayed off. A singleton needs no remove-first either.
+  lines.push(`/radius incoming set accept=yes port=${coaPort}`);
   // accept=yes is only half of it. The default input policy drops unsolicited
   // UDP, so without this rule the listener is enabled and every Disconnect-Request
   // is still discarded before it reaches it. Scoped to the RADIUS server.

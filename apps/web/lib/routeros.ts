@@ -225,9 +225,11 @@ export function buildRouterosSetup(o: ScriptOptions = {}): string {
   }
 
   lines.push(c("7. CoA - lets NETPID disconnect a user from the dashboard"));
-  lines.push(
-    `/radius incoming set accept=yes port=${coaPort} comment=${rosQuote(`NETPID:${shortname}`)}`,
-  );
+  // /radius/incoming is a SETTINGS singleton, not a list, and the only
+  // properties it has are accept, port and vrf. The "comment" this used to set
+  // does not exist, so the router answered "expected end of command" and CoA
+  // stayed off. A singleton needs no remove-first either - set is idempotent.
+  lines.push(`/radius incoming set accept=yes port=${coaPort}`);
   // accept=yes is only half of it. The default input policy drops unsolicited
   // UDP, so without this rule the listener is enabled and every Disconnect-Request
   // is still discarded before it reaches it - and "disconnect from the
