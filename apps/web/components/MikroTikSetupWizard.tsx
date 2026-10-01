@@ -34,7 +34,22 @@ const MODES: Mode[] = ["HOTSPOT", "PPPOE", "HOTSPOT_PPPOE"];
 const modeLabel = (m: Mode) =>
   m === "HOTSPOT_PPPOE" ? "HotSpot + PPPoE" : m === "HOTSPOT" ? "HotSpot" : "PPPoE";
 
-export default function MikroTikSetupWizard() {
+export default function MikroTikSetupWizard({
+  routerId,
+  radiusSecret = "",
+}: {
+  /**
+   * Binds the session to the router record, so every object the configure
+   * script creates is tagged with a real router id and the stored RADIUS
+   * secret is found automatically. Omit it to run discovery standalone.
+   */
+  routerId?: string | null;
+  /**
+   * The secret shown once at router creation. Passed in so the operator does
+   * not retype it; it is sent with the configure call and never stored here.
+   */
+  radiusSecret?: string;
+} = {}) {
   const [token, setToken] = useState("");
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
@@ -101,7 +116,7 @@ export default function MikroTikSetupWizard() {
       const res = await fetch("/api/provision/mikrotik/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(routerId ? { router_id: routerId } : {}),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "Could not start provisioning");
@@ -130,7 +145,9 @@ export default function MikroTikSetupWizard() {
           hotspot_interfaces: hsPorts, pppoe_interfaces: pppPorts,
           hotspot_subnet: hsSubnet, hotspot_range: hsRange, hotspot_dns: hsDns,
           pppoe_pool: pppoePool, pppoe_ranges: pppoeRanges, pppoe_local: pppoeLocal,
-          radius_secret: secret,
+          // The secret from router creation is used automatically; the field
+          // stays empty unless the operator needs to override it.
+          radius_secret: secret || radiusSecret,
         }),
       });
       const j = await res.json();

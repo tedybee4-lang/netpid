@@ -573,6 +573,76 @@ test("the configure route re-checks ISP ownership, not just resolveIsp", () => {
   const status = read("../../apps/web/app/api/provision/mikrotik/status/[token]/route.ts");
   assert.ok(status.includes("session.isp_id !== r.ispId"));
 });
+test("configure refuses before the router has reported its hardware", () => {
+  // Otherwise a script would be generated for interfaces NETPID never saw.
+  assert.ok(configureRoute.includes("CAPABILITIES_DETECTED"));
+  assert.ok(configureRoute.includes("Run the bootstrap command first"));
+});
+
+// ---------------------------------------------------------------------------
+// The wizard must actually be REACHABLE
+// ---------------------------------------------------------------------------
+
+/**
+ * These exist because the wizard was written, committed, typechecked and
+ * never mounted: every automated check passed while the dashboard kept showing
+ * the old static script. A component that is not on a page is not a feature.
+ */
+const ENTRY_POINTS = [
+  ["routers/new", "../../apps/web/app/dashboard/network/routers/new/page.tsx"],
+  ["QuickAddRouter", "../../apps/web/app/dashboard/network/routers/QuickAddRouter.tsx"],
+];
+
+for (const [name, path] of ENTRY_POINTS) {
+  test(`${name} mounts the interactive wizard`, () => {
+    const src = read(path);
+    assert.ok(/import MikroTikSetupWizard from/.test(src), `${name} must import the wizard`);
+    assert.ok(/<MikroTikSetupWizard/.test(src), `${name} must render the wizard`);
+  });
+
+  test(`${name} passes the router id so the session binds to the router`, () => {
+    const src = read(path);
+    assert.ok(/<MikroTikSetupWizard[\s\S]{0,200}routerId=\{/.test(src),
+      `${name} must pass routerId, or every created object is tagged with a session id instead`);
+  });
+}
+
+test("the wizard sends the router id when it mints a token", () => {
+  const src = read("../../apps/web/components/MikroTikSetupWizard.tsx");
+  assert.ok(/router_id: routerId/.test(src), "the session must be bound at generate time");
+});
+
+test("the wizard prefills the RADIUS secret from router creation", () => {
+  const src = read("../../apps/web/components/MikroTikSetupWizard.tsx");
+  // Otherwise the operator is asked to retype a secret shown exactly once, and
+  // a RADIUS client with no secret fails every login.
+  assert.ok(/secret \|\| radiusSecret/.test(src));
+  for (const [name, path] of ENTRY_POINTS) {
+    assert.ok(/radiusSecret=\{/.test(read(path)), `${name} must pass the secret in`);
+  }
+});
+
+test("the static installer is still available, but only as a labelled fallback", () => {
+  // Removing it would break an operator whose router cannot reach NETPID,
+  // which is exactly the situation the wizard cannot solve.
+  for (const [name, path] of ENTRY_POINTS) {
+    const src = read(path);
+    assert.ok(/Advanced: static installer script/.test(src),
+      `${name} must keep the static script as a documented fallback`);
+    assert.ok(/cannot reach NETPID/.test(src), `${name} must say when to use it`);
+  }
+});
+
+test("the wizard is the primary artifact, not the static script", () => {
+  for (const [name, path] of ENTRY_POINTS) {
+    const src = read(path);
+    // The wizard appears before the fallback, so it is what the operator sees.
+    assert.ok(
+      src.indexOf("<MikroTikSetupWizard") < src.indexOf("Advanced: static installer"),
+      `${name} must show the wizard first`,
+    );
+  }
+});
 
 test("configure refuses before the router has reported its hardware", () => {
   // Otherwise a script would be generated for interfaces NETPID never saw.

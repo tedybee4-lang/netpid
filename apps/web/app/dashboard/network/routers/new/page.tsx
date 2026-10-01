@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import QuickAddRouter from "../QuickAddRouter";
+import MikroTikSetupWizard from "@/components/MikroTikSetupWizard";
 
 type Created = {
   router: { id: string; name: string; host: string };
@@ -104,39 +105,49 @@ export default function NewRouterPage() {
           </div>
         )}
 
-        {result.installer_missing?.length > 0 && (
-          <div className="card mt-4 border-amber-400 bg-amber-50">
-            <h2 className="font-bold text-amber-900">Fill these in before the script runs</h2>
-            <p className="hint mb-2 text-amber-900">
-              These are YOUR site values. NETPID will not invent a subnet, so the
-              script ships with them blank and stops on the router if any is still
-              empty.
-            </p>
-            <ul className="list-disc pl-5 font-mono text-xs text-amber-900">
-              {result.installer_missing.map((m) => <li key={m}>{m}</li>)}
-            </ul>
-          </div>
-        )}
-
-        <div className="card mt-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-bold">NETPID router installer (RouterOS 7)</h2>
-            <div className="flex gap-2">
-              <button className="btn-ghost btn-sm" onClick={copyScript}>
-                {copied ? "Copied ✓" : "Copy script"}
-              </button>
-              <button className="btn-ghost btn-sm" onClick={download}>Download .rsc</button>
-            </div>
-          </div>
-          <p className="hint mb-3">
-            The complete router: preflight, identity, clock, DNS/NTP, WAN, LAN
-            bridge and addressing, DHCP, NAT, firewall, RADIUS with accounting and
-            CoA, HotSpot, PPPoE, WireGuard management, and a restricted RouterOS
-            API. Idempotent &mdash; safe to re-run. In RouterOS: open{" "}
-            <em>Files</em> and drop the .rsc in, or paste into <em>Terminal</em>.
-          </p>
-          <pre className="code-block rsc max-h-96 whitespace-pre">{result.installer}</pre>
+        {/*
+          THE WIZARD IS THE PROVISIONING ARTIFACT.
+          The static .rsc below cannot know which ports are free, which are
+          already bridged, or what RouterOS version is on the box, so it ships
+          with blanks and stops on the router. The wizard reads the real
+          hardware first and configures against that, so the operator never
+          has to edit SECTION A by hand.
+        */}
+        <div className="mt-4">
+          <h2 className="mb-2 text-lg font-bold">Provision this router</h2>
+          <MikroTikSetupWizard
+            routerId={result.router.id}
+            radiusSecret={result.secret_once ?? ""}
+          />
         </div>
+
+        <details className="card mt-4">
+          <summary className="cursor-pointer font-bold">
+            Advanced: static installer script (fallback)
+          </summary>
+          <p className="hint my-2">
+            Use this only if the router cannot reach NETPID &mdash; no DNS, no
+            route out, or a firewall blocking outbound HTTPS. The wizard above
+            needs the router to make one outbound request. Otherwise prefer the
+            wizard: this script ships with your site values blank and stops on
+            the router if any is still empty.
+          </p>
+          {result.installer_missing?.length > 0 && (
+            <div className="mb-3 rounded-lg border border-amber-400 bg-amber-50 p-3">
+              <p className="font-bold text-amber-900">Fill these in before the script runs</p>
+              <ul className="list-disc pl-5 font-mono text-xs text-amber-900">
+                {result.installer_missing.map((m) => <li key={m}>{m}</li>)}
+              </ul>
+            </div>
+          )}
+          <div className="mb-2 flex flex-wrap gap-2">
+            <button className="btn-ghost btn-sm" onClick={copyScript}>
+              {copied ? "Copied ✓" : "Copy script"}
+            </button>
+            <button className="btn-ghost btn-sm" onClick={download}>Download .rsc</button>
+          </div>
+          <pre className="code-block rsc max-h-96 whitespace-pre">{result.installer}</pre>
+        </details>
 
         <div className="mt-6 flex flex-wrap gap-2">
           <Link href={`/dashboard/network/routers/${result.router.id}`} className="btn-primary">

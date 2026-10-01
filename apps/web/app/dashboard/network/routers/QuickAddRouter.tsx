@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import MikroTikSetupWizard from "@/components/MikroTikSetupWizard";
 
 interface Result {
   router: { id: string; name: string; host: string };
@@ -148,47 +149,57 @@ export default function QuickAddRouter() {
             <p className="hint mt-2">{res.warning}</p>
           </div>
 
-          {res.installer_missing?.length > 0 && (
-            <section className="card border-amber-400 bg-amber-50">
-              <h2 className="panel-title text-amber-900">
-                Fill these in before the script will run
-              </h2>
-              <p className="hint mt-1 text-amber-900">
-                These are YOUR site values. NETPID will not invent a subnet, so the
-                script ships with them blank and stops on the router if any is
-                still empty. Edit SECTION A of the .rsc, or set them once in
-                provisioning defaults.
-              </p>
-              <ul className="mt-2 list-disc pl-5 text-xs text-amber-900">
-                {res.installer_missing.map((m: string) => (
-                  <li key={m} className="font-mono">{m}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-
+          {/*
+            THE WIZARD IS THE PROVISIONING ARTIFACT.
+            The static .rsc cannot know which ports are free, which are already
+            bridged, or what RouterOS version is on the box, so it ships with
+            blanks and stops on the router. The wizard reads the real hardware
+            first and configures against that, so nothing is edited by hand.
+          */}
           <section className="card">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="panel-title">NETPID router installer (RouterOS 7)</h2>
-              <div className="flex gap-2">
-                <button type="button" className="btn-ghost btn-sm"
-                  onClick={() => copy("installer", res.installer)}>
-                  {copied === "installer" ? "Copied" : "Copy"}
-                </button>
-                <button type="button" className="btn-ghost btn-sm"
-                  onClick={() => download(res.installer)}>
-                  Download .rsc
-                </button>
-              </div>
-            </div>
-            <p className="hint mt-1">
-              The complete router: preflight, identity, clock, DNS/NTP, WAN, LAN
-              bridge and addressing, DHCP, NAT, firewall, RADIUS with accounting
-              and CoA, HotSpot, PPPoE, WireGuard management, and a restricted
-              RouterOS API. Idempotent &mdash; safe to re-run.
+            <h2 className="panel-title">Provision this router</h2>
+            <p className="hint mt-1 mb-2">
+              The router makes one outbound request to NETPID and reports what it
+              is. You then pick the ports, and NETPID generates a script built for
+              this exact box.
             </p>
-            <pre className="code-block mt-2 max-h-96 overflow-auto">{res.installer}</pre>
+            <MikroTikSetupWizard
+              routerId={res.router.id}
+              radiusSecret={res.secret_once}
+            />
           </section>
+
+          <details className="card">
+            <summary className="cursor-pointer panel-title">
+              Advanced: static installer script (fallback)
+            </summary>
+            <p className="hint mt-1 mb-2">
+              Use this only if the router cannot reach NETPID &mdash; no DNS, no
+              route out, or a firewall blocking outbound HTTPS. The wizard above
+              needs the router to make one outbound request.
+            </p>
+            {res.installer_missing?.length > 0 && (
+              <div className="mb-2 rounded-lg border border-amber-400 bg-amber-50 p-3">
+                <p className="font-bold text-amber-900">Fill these in before the script will run</p>
+                <ul className="mt-1 list-disc pl-5 font-mono text-xs text-amber-900">
+                  {res.installer_missing.map((m: string) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button type="button" className="btn-ghost btn-sm"
+                onClick={() => copy("installer", res.installer)}>
+                {copied === "installer" ? "Copied" : "Copy"}
+              </button>
+              <button type="button" className="btn-ghost btn-sm"
+                onClick={() => download(res.installer)}>
+                Download .rsc
+              </button>
+            </div>
+            <pre className="code-block mt-2 max-h-96 overflow-auto">{res.installer}</pre>
+          </details>
 
           <button className="btn-primary" onClick={() => router.push("/dashboard/network")}>
             Go to routers
