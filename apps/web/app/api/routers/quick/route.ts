@@ -5,6 +5,7 @@ import { checkRateLimit, encryptSecret, randomSecret } from "@/lib/secrets";
 import { resolveRadiusHost } from "@/lib/radius-host";
 import { buildRouterosScripts, buildWireguardScript, normalizeRosVersion, rosName } from "@/lib/routeros";
 import { allocateTunnelSubnet, encryptTunnelKey, generateKeyPair } from "@/lib/wireguard";
+import { buildRouterosInstaller, installerMissing } from "@/lib/routeros-installer";
 import { z } from "zod";
 
 /**
@@ -29,6 +30,16 @@ type Defaults = {
   radius_auth_port: number; radius_acct_port: number; radius_coa_port: number;
   nas_prefix: string; dns_servers: string; ntp_servers: string;
   wifi_ssid: string | null; country_code: string;
+  // 0046. The customer's own networks, for the RouterOS installer. Every one of
+  // these is nullable on purpose: NETPID must not invent a subnet, so an unset
+  // value is passed through as blank and the installer's preflight stops and
+  // reports it on the router.
+  mode: "NEW" | "EXISTING";
+  wan: string | null; lan_bridge: string | null; lan_ports: string[] | null;
+  lan_subnet: string | null; lan_gateway: string | null; dhcp_pool: string | null;
+  hotspot_enabled: boolean;
+  hotspot_subnet: string | null; hotspot_pool: string | null; hotspot_dns: string | null;
+  pppoe_enabled: boolean; pppoe_pool: string | null;
 };
 
 export async function POST(req: Request) {
@@ -169,6 +180,57 @@ export async function POST(req: Request) {
       routerTunnelIp: tunnel.routerIp,
       vpsTunnelIp: tunnel.vpsIp,
       vpsEndpoint: process.env.NETPID_WG_ENDPOINT?.trim() || undefined,
+    }),
+    // THE authoritative installer. Everything the operator needs to take this
+    // router to production is in this one file: LAN, DHCP, DNS, firewall, NAT,
+    // HotSpot, PPPoE, RADIUS, CoA, WireGuard and the restricted API.
+    //
+    // The RADIUS secret and the API password are deliberately left blank. They
+    // are operator inputs; a generator that embedded them would put a live
+    // credential in git history. The installer skips RADIUS and generates a
+    // one-time API password instead, printing each exactly once.
+    //
+    // The WireGuard server key IS included - NETPID just generated it - so the
+    // peer is real. A router created without it would get an interface and no
+    // tunnel, which is the state that was mistaken for "provisioned".
+    installer: buildRouterosInstaller({
+      mode: (d.mode as "NEW" | "EXISTING") ?? "EXISTING",
+      identity: name,
+      wan: d.wan ?? "ether1",
+      lanBridge: d.lan_bridge ?? "bridge-lan",
+      lanPorts: d.lan_ports?.length ? d.lan_ports : ["ether2", "ether3", "ether4", "ether5"],
+      lanSubnet: d.lan_subnet ?? "",
+      lanGateway: d.lan_gateway ?? "",
+      dhcpPool: d.dhcp_pool ?? "",
+      hotspotEnabled: d.hotspot_enabled !== false,
+      hotspotSubnet: d.hotspot_subnet ?? "",
+      hotspotPool: d.hotspot_pool ?? "",
+      hotspotDnsName: d.hotspot_dns ?? "",
+      pppoeEnabled: d.pppoe_enabled !== false,
+      pppoePool: d.pppoe_pool ?? "",
+      radiusServer: radius.host,
+      nasShortname: shortname,
+      wgServerPublicKey: keys.publicKey,
+      wgServerTunnelIp: tunnel.vpsIp,
+      wgRouterTunnelIp: tunnel.routerIp,
+      wgEndpoint: process.env.NETPID_WG_ENDPOINT?.trim() || undefined,
+      mgmtNetwork: tunnel.subnet,
+    }),
+    // What the operator still has to fill in before the installer will run.
+    // Serving a config the router will reject is worse than saying so here.
+    installer_missing: installerMissing({
+      identity: name,
+      lanSubnet: d.lan_subnet ?? "",
+      lanGateway: d.lan_gateway ?? "",
+      dhcpPool: d.dhcp_pool ?? "",
+      hotspotEnabled: d.hotspot_enabled !== false,
+      hotspotSubnet: d.hotspot_subnet ?? "",
+      hotspotPool: d.hotspot_pool ?? "",
+      hotspotDnsName: d.hotspot_dns ?? "",
+      pppoeEnabled: d.pppoe_enabled !== false,
+      pppoePool: d.pppoe_pool ?? "",
+      radiusServer: radius.host,
+      nasShortname: shortname,
     }),
     // Both scripts, always: the operator pastes the one that matches their box.
     scripts: buildRouterosScripts({

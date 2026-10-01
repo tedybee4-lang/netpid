@@ -4,7 +4,7 @@ import { mtConnect, mtCommand, mtClose } from "./mikrotik.js";
 import { decryptSecret } from "./secrets.js";
 import { sendDisconnect } from "./radius-wire.js";
 import { bareUsername, indexNasByName, indexUsernameOwners, mapAccountingRow, resolvePacketTenant, staleCutoffIso } from "./radius-logic.js";
-import { buildCustomerQueue } from "./routeros.mjs";
+import { buildCustomerQueue, rosPaths } from "./routeros.mjs";
 
 const COA_TIMEOUT_MS = Number(process.env.RADIUS_COA_TIMEOUT_MS) || 5000;
 
@@ -334,16 +334,25 @@ export async function routerProvision(sb, job) {
       port: router.use_ssl ? router.api_ssl_port : router.api_port,
       username: router.api_username, password, ssl: router.use_ssl });
 
-    const stale = await run(["/ip/radius/print", `?comment=NETPID:${nas.shortname}`]);
+    // RADIUS is version-sensitive: RouterOS 7 promoted it out of /ip to a
+    // top-level menu, and a 7.x router answers "bad command name radius" for
+    // /ip radius. This handler used to mix the two forms - /ip/radius/* for the
+    // client and /radius/incoming for CoA - so it failed on 6.x AND on 7.x.
+    // Both halves now go through rosPaths.
+    const paths = rosPaths(router.script_ros_version ?? router.ros_version);
+    const R = paths.radiusClient;                 // "/radius" on 7, "/ip radius" on 6
+
+    const stale = await run([`${R}/print`, `?comment=NETPID:${nas.shortname}`]);
     for (const row of stale ?? []) {
-      if (row[".id"]) await run(["/ip/radius/remove", `=.id=${row[".id"]}`]);
+      if (row[".id"]) await run([`${R}/remove`, `=.id=${row[".id"]}`]);
     }
-    await run(["/ip/radius/add", "=service=ppp,hotspot", `=address=${server.host}`,
+    await run([`${R}/add`, "=service=ppp,hotspot", `=address=${server.host}`,
       `=secret=${secret}`, `=auth-port=${server.auth_port ?? 1812}`,
       `=acct-port=${server.acct_port ?? 1813}`, "=timeout=1500ms",
       "=comment=NETPID:" + nas.shortname]);
     await run(["/ppp/aaa/set", "=use-radius=yes", "=accounting=yes", "=interim-update=5m"]);
-    await run(["/radius/incoming/set", "=accept=yes", `=port=${nas.coa_port ?? 3799}`]);
+    // CoA. The NAS may target a different port than the global 3799 default.
+    await run([`${R}/incoming/set`, "=accept=yes", `=port=${nas.coa_port ?? 3799}`]);
 
     await sb.from("router_provision_log").insert({ isp_id: job.isp_id, router_id,
       action: "provisioned", source: "worker",
