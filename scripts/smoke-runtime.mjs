@@ -235,13 +235,24 @@ async function run() {
   const providerRows = await countRows(`payment_providers`);
   const darajaRows = await countRows(`payment_providers?provider=eq.daraja`);
   const payheroRows = await countRows(`payment_providers?provider=eq.payhero`);
-  const darajaLive = (darajaRows ?? 0) > 0;
 
-  // Daraja is PER-ISP configuration. "0 provider rows" was only ever true before
-  // an ISP saved credentials, so asserting it would make this suite wrong the
-  // moment the integration is actually switched on. What must hold in BOTH states
-  // is that no secret is ever stored in the clear and no legacy provider returns.
+  // STK Push is live only when BOTH halves exist (migration 0044): this ISP has
+  // an active daraja row with a Till/PayBill to collect into, AND NETPID's
+  // single platform app is present to authenticate with. Counting daraja rows
+  // was the old per-ISP model and reported "live" whenever any ISP had ever
+  // saved a number — so the suite then expected a 201/502 the portal correctly
+  // refused with 422.
+  const ispProvider = await rest(
+    `payment_providers?isp_id=eq.${isp.id}&provider=eq.daraja&status=eq.active&select=till_number,paybill`,
+  );
+  const target = (ispProvider?.[0]?.till_number ?? ispProvider?.[0]?.paybill ?? "").trim();
+  const platformRows = await countRows(`payment_providers?provider=eq.daraja&isp_id=is.null`);
+  const darajaLive = Boolean(target) && (platformRows ?? 0) > 0;
+
+  // What must hold in BOTH states is that no secret is ever stored in the clear
+  // and no legacy provider returns.
   console.log(`info payment provider state: total=${providerRows} daraja=${darajaRows} payhero=${payheroRows}`
+    + ` platform_app=${platformRows ?? 0} isp_target=${target || "none"}`
     + ` -> Daraja ${darajaLive ? "CONFIGURED" : "unconfigured"}`);
   check(`no payhero provider rows (got ${payheroRows})`, payheroRows === 0);
 
@@ -286,17 +297,23 @@ async function run() {
         typeof body?.error === "string" && body.error.length > 0,
         JSON.stringify(body?.error ?? null),
       );
-      check(`daraja_configured === false (got ${body?.daraja_configured})`, body?.daraja_configured === false);
-      check(`manual_available === true (got ${body?.manual_available})`, body?.manual_available === true);
+      // The portal is STK-only. It must NOT advertise a manual fallback: that
+      // flow was removed deliberately, and re-advertising it would walk a
+      // customer to a till page that can no longer accept a receipt.
+      check(`no manual fallback is advertised (got manual_available=${body?.manual_available})`,
+        body?.manual_available === false);
       check(
-        `manual fallback message present`,
-        typeof body?.message === "string" && /Till\/PayBill/i.test(body.message),
+        `no "pay at the Till" instruction is offered`,
+        !(typeof body?.message === "string" && /Till\/PayBill/i.test(body.message)),
         JSON.stringify(body?.message ?? null),
       );
-      check(
-        `no price tampering: amount echoes package price (${body?.amount} vs ${pkg.price})`,
-        body?.amount === pkg.price,
-      );
+      // This is where the price-tampering property now lives. The 422 is a
+      // rejection, so there is no amount to echo back; what must hold is that
+      // the client never named a price AND a request that cannot be served
+      // leaves no payment row behind to be settled later.
+      const paymentsAfter = await countRows(`payments?isp_id=eq.${isp.id}`);
+      check(`a rejected buy creates no payment row (${paymentsBefore} -> ${paymentsAfter})`,
+        paymentsAfter === paymentsBefore);
     }
 
     const paymentsAfter = await countRows(`payments?isp_id=eq.${isp.id}`);
@@ -437,8 +454,17 @@ async function run() {
     check(`page windows hold at most per_page rows (p1=${n1} p2=${n2})`, n1 <= 2 && n2 <= 2);
     check(`page 2 returns a different window than page 1`,
       JSON.stringify(p1.j) !== JSON.stringify(p2.j));
-    check(`has_more is true while more rows remain (total=${total}, has_more=${p1.j?.has_more})`,
-      p1.j?.has_more === true);
+    // has_more must describe THIS data rather than a hard-coded expectation.
+    // With one payment row and per_page=2 the correct answer is false, and
+    // asserting true reported a healthy deployment as broken. Computing the
+    // expectation from total also keeps the check meaningful once the table
+    // grows past one page.
+    const perPage = p1.j?.per_page ?? 0;
+    const expectedHasMore = total > perPage;
+    check(`has_more matches the rows present (total=${total}, per_page=${perPage}, has_more=${p1.j?.has_more}, expected=${expectedHasMore})`,
+      p1.j?.has_more === expectedHasMore);
+    check(`total_pages implies has_more (total_pages=${p1.j?.total_pages})`,
+      p1.j?.has_more === (p1.j?.total_pages ?? 0) > 1);
   }
 
 
