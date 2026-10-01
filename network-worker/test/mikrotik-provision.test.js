@@ -256,6 +256,38 @@ test("every variable read is either declared or a RouterOS built-in", () => {
   }
 });
 
+test("no scratch variable shadows a data variable", () => {
+  // The interface list arrived as a single interface named "0", and the wizard
+  // could offer no port. The cause was a collision, not a dialect problem: the
+  // character walk that encodes spaces for the URL used npI as its loop counter,
+  // and npI is the variable HOLDING the interface list. For that one field the
+  // line ":local npI 0" wiped the data before "[:len $npI]" could measure it,
+  // and the script faithfully reported "0".
+  //
+  // It is invisible in the other seven fields, because those read from npB, npM,
+  // npV, npA, npC, npR and npG. Only the field whose source variable happened
+  // to match the counter broke, which is exactly the kind of bug that a test
+  // asserting "eight fields are encoded" cannot see.
+  const DATA = new Set(["npB", "npM", "npV", "npA", "npC", "npR", "npI", "npG"]);
+  const SCRATCH = new Set(["npS", "npX", "npY", "npZ", "npUrl"]);
+
+  for (const n of SCRATCH) {
+    assert.ok(!DATA.has(n),
+      `scratch variable ${n} collides with a data variable and will overwrite it`);
+  }
+  // The check that actually failed in the field: no counter may be named after a
+  // data variable, because ":local <name> 0" destroys the value it then measures.
+  const counters = [...BOOT.matchAll(/^\s*:local\s+(np\w+)\s+0\s*$/gm)].map((m) => m[1]);
+  assert.ok(counters.length > 0, "expected at least one counter to check");
+  for (const c of counters) {
+    assert.ok(!DATA.has(c),
+      `counter ${c} is a data variable, so ":local ${c} 0" destroys the value it is meant to measure`);
+  }
+  // The interface field must still be the one that measures $npI.
+  assert.ok(/:local npZ \[:len \$npI\]/.test(BOOT),
+    "the interface field must measure $npI with a differently named counter");
+});
+
 test("no value is concatenated into the URL with a raw space", () => {
   // THE FIELD FAILURE. The script ran to completion and printed
   //
@@ -274,7 +306,7 @@ test("no value is concatenated into the URL with a raw space", () => {
   // is no [:split function in RouterOS. The router parses the bracketed word as
   // a command to run and answers "bad command name split". The source variable
   // for each field is now named by the `[:len]` that seeds the walk.
-  const encoded = BOOT.match(/:local npL \[:len \$\w+\]/g) ?? [];
+  const encoded = BOOT.match(/:local npZ \[:len \$\w+\]/g) ?? [];
   assert.equal(encoded.length, 8, "every one of the eight values is space-encoded");
   // The walk must not reach for a function outside the dialect.
   assert.ok(!/\[:split/.test(BOOT.replace(/(^|\s)#.*$/gm, "")),
@@ -398,7 +430,7 @@ test("the register URL the router calls is reconstructed correctly", () => {
   const sourceFor = [];
   const lines = BOOT.split("\n");
   for (const [i, line] of lines.entries()) {
-    const m = /:local npL \[:len \$(\w+)\]/.exec(line);
+    const m = /:local npZ \[:len \$(\w+)\]/.exec(line);
     if (!m) continue;
     // The append that follows this block uses $npS, the encoded buffer.
     const append = lines.slice(i, i + 10).find((l) => l.startsWith(":set npUrl ($npUrl . "));

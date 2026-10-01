@@ -158,19 +158,24 @@ export function buildBootstrapScript(opts: {
     // :while, :if, [:len] and [:pick] - is core, so there is nothing here that
     // depends on a function the router might not have.
     p(`:local npS ""`);
-    p(`:local npC ""`);
-    p(`:local npI 0`);
-    p(`:local npL [:len $${v}]`);
-    p(`:while ($npI < $npL) do={`);
-    p(`  :set npC [:pick $${v} $npI ($npI + 1)]`);
-    p(`  :if ($npC = " ") do={ :set npS ($npS . "+") } else={ :set npS ($npS . $npC) }`);
-    p(`  :set npI ($npI + 1)`);
+    // Scratch names are npS, npX, npY and npZ. NONE of them is a data name.
+    // Two collisions existed before this was checked: the counter was npI, which
+    // holds the interface list, and the character variable was npC, which holds
+    // the CPU string. Each wiped the very value its own [:len] was about to
+    // measure, so those two fields reported "0" while the other six were fine.
+    p(`:local npX ""`);
+    p(`:local npY 0`);
+    p(`:local npZ [:len $${v}]`);
+    p(`:while ($npY < $npZ) do={`);
+    p(`  :set npX [:pick $${v} $npY ($npY + 1)]`);
+    p(`  :if ($npX = " ") do={ :set npS ($npS . "+") } else={ :set npS ($npS . $npX) }`);
+    p(`  :set npY ($npY + 1)`);
     p(`}`);
     p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $npS)`);
     p(`:set npS ""`);
-    p(`:set npC ""`);
-    p(`:set npI 0`);
-    p(`:set npL 0`);
+    p(`:set npX ""`);
+    p(`:set npY 0`);
+    p(`:set npZ 0`);
   });
   p("");
   p(":do {");
