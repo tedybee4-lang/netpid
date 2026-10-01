@@ -40,6 +40,10 @@ export async function GET(
   if (session.status === "CANCELLED") return fail("This provisioning session was cancelled.");
 
   const script = buildBootstrapScript({
+    // The request origin is what the router already reached, so it works
+    // during a preview. The report is a one-shot GET, unlike the heartbeat,
+    // so an ephemeral host here is acceptable and is the only host that
+    // definitely exists right now.
     baseUrl: new URL(req.url).origin,
     token,
     sessionId: session.id,

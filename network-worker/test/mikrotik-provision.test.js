@@ -113,6 +113,100 @@ function baseOpts(o = {}) {
     heartbeatName: "netpid-heartbeat-11111111",
     ...o,
   };
+test("no generated line leaves an expression open", () => {
+  // A parenthesised or bracketed expression split across lines is a syntax
+  // error on RouterOS: the parser hits end-of-line still inside it and reports
+  // only "syntax error (line N column M)" with nothing to say which construct
+  // failed. Every statement must be complete on its own line.
+  for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
+    for (const [n, raw] of s.split("\n").entries()) {
+      const t = raw.replace(/(^|\s)#.*$/, "").replace(/"[^"]*"/g, '""');
+      if (t.includes(":put") || t.includes(":error")) continue;
+      const open = (t.match(/[({]/g) ?? []).length;
+      const close = (t.match(/[)}]/g) ?? []).length;
+      assert.equal(
+        open, close,
+        `${label} line ${n + 1} leaves an expression open: ${raw.trim().slice(0, 70)}`,
+      );
+    }
+  }
+});
+
+test("no generated line is long enough to risk a paste or log limit", () => {
+  // A 156-char line already triggered a parse failure in the field; keep a wide
+  // margin so a longer hostname or token cannot push a line over an edge.
+  for (const [s, label] of [[GEN, "configure"], [BOOT, "bootstrap"]]) {
+    for (const [n, raw] of s.split("\n").entries()) {
+      if (raw.trim().startsWith("#")) continue;
+      assert.ok(raw.length <= 200, `${label} line ${n + 1} is ${raw.length} chars`);
+    }
+  }
+});
+
+test("the bootstrap URL is built one statement per line", () => {
+  // The field failure: `[:local npUrl ("https://..."` followed by `. "?...`
+  // continuation lines. RouterOS stopped at the end of that line with only a
+  // column number to go on.
+  assert.ok(/^:set npUrl "https:\/\/[^"]+\/register\/[^"]+"$/m.test(BOOT),
+    "the base URL is one complete statement");
+  const appends = BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "));
+  assert.equal(appends.length, 8, "one append per reported field");
+  for (const a of appends) {
+    assert.match(a, /^:set npUrl \(\$npUrl \. "[?&][a-z]+=" \. \$np\w+\)$/, `bad append: ${a}`);
+  }
+});
+
+test("only the FIRST query parameter uses ?, and the rest use &", () => {
+  // Every parameter sent as "&" with no leading "?" makes the whole query
+  // string part of the path, and the server reads no parameters at all.
+  const appends = BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "));
+  assert.match(appends[0], /\?"/ , "the first separator is ?");
+  for (const a of appends.slice(1)) {
+    assert.match(a, /"&/, `a later parameter must use &: ${a}`);
+  }
+});
+
+test("the register URL the router calls is reconstructed correctly", () => {
+  // Replay the generated statements to prove the final URL is well formed.
+  const vals = {
+    npB: "hAP lite", npM: "hAP lite", npQ: "7.21.5", npA: "arm",
+    npC: "MIPS 24Kc V7.4", npR: "65536 KiB",
+    npI: "ether1,ether2,wlan1", npG: "bridge-lan:ether2",
+  };
+  let url = /:set npUrl "([^"]+)"/.exec(BOOT)[1];
+  for (const line of BOOT.split("\n").filter((l) => l.startsWith(":set npUrl ($npUrl . "))) {
+    const sep = /"([?&])([a-z]+)="/.exec(line);
+    const v = /\$(np\w+)\)/.exec(line)[1];
+    url += sep[1] + sep[2] + "=" + vals[v];
+  }
+  const u = new URL(url);
+  assert.equal(u.searchParams.get("board"), "hAP lite");
+  assert.equal(u.searchParams.get("version"), "7.21.5");
+  assert.equal(u.searchParams.get("ifaces"), "ether1,ether2,wlan1");
+  assert.equal(u.searchParams.get("bridges"), "bridge-lan:ether2");
+  assert.equal(u.pathname.split("/").pop().length, 43, "the token stays a full path segment");
+});
+
+// ---------------------------------------------------------------------------
+// A preview deployment must not be baked into a router
+// ---------------------------------------------------------------------------
+
+test("a Vercel PREVIEW host is refused for the heartbeat and reported", () => {
+  // The field paste used netpid-2b9dmps30-...-projects.vercel.app. A preview
+  // deployment is torn down, and the heartbeat scheduler the configure script
+  // installs would then call a URL that 404s forever, silently.
+  assert.match(lib, /vercel\.app/);
+  assert.ok(!/publicBaseUrl\(\)[\s\S]{0,80}projects\.vercel\.app/.test(script),
+    "no preview host is embedded in generated RouterOS");
+});
+
+test("the heartbeat points at a stable host, not the request origin", () => {
+  const configure = read("../../apps/web/app/api/provision/mikrotik/configure/[token]/route.ts");
+  // new URL(req.url).origin is whatever host the operator happened to load,
+  // which for a preview deployment is a URL that will not exist tomorrow.
+  assert.ok(!/heartbeatUrl:\s*`\$\{origin\}/.test(configure),
+    "the heartbeat must not use the request origin");
+});
 }
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -375,14 +469,21 @@ test("the heartbeat is installed as a scheduler entry", () => {
 
 test("a re-run updates instead of duplicating", () => {
   // Each create is guarded by a find, so running the script twice converges.
-  const guarded = (s) => statements(s).filter((l) => /\badd\b/.test(l) && l.startsWith("/"))
-    .every((l) => {
-      // Guarded creates live inside an :if that tests an existing object.
-      return s.includes(":if ([:len") && l;
-    });
-  assert.ok(guarded(GEN));
-  assert.ok((GEN.match(/\[:len/g) ?? []).length >= (GEN.match(/\badd\b/g) ?? []).length,
-    "every create should be guarded by a find");
+  // Checked structurally: every `add` sits inside a block that tests for the
+  // object's existence first.
+  for (const [s, label] of [[GEN, "HOTSPOT"], [GEN_BOTH, "HOTSPOT+PPPOE"], [GEN_V6, "v6"]]) {
+    const lines = statements(s);
+    let guarded = 0;
+    for (const l of creates(s)) {
+      // Walk backwards to the nearest block opener; it must be a find test.
+      const i = lines.indexOf(l);
+      const opener = lines.slice(0, i).reverse().find((x) => /\{\s*$/.test(x) || / do=\{\s*$/.test(x));
+      assert.ok(opener && /\[:len \[.*find/.test(opener),
+        `${label}: create is not guarded: ${l.slice(0, 60)}`);
+      guarded++;
+    }
+    assert.ok(guarded >= 8, `${label}: expected several guarded creates, found ${guarded}`);
+  }
 });
 // ---------------------------------------------------------------------------
 // RouterOS dialect: the mistakes that have actually broken on real devices

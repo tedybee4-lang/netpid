@@ -203,6 +203,68 @@ export function publicBaseUrl(): string {
   return "http://localhost:3000";
 }
 
+/** A private/LAN address a router on the same site could reach. */
+function isPrivateHost(h: string): boolean {
+  return h === "localhost"
+    || h.startsWith("127.")
+    || h.startsWith("10.")
+    || h.startsWith("192.168.")
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    || h.endsWith(".local")
+    || h.endsWith(".internal");
+}
+
+/**
+ * Is this a throwaway deployment?
+ *
+ * The field paste used netpid-2b9dmps30-...-projects.vercel.app. A Vercel
+ * preview host is deleted when its branch is deleted or merged, and the
+ * configure script installs a heartbeat scheduler pointing at whatever host
+ * served the request. Baking a preview host in leaves a router reporting to a
+ * URL that 404s forever, with nothing in the dashboard to explain it.
+ */
+export function isEphemeralHost(host: string): boolean {
+  const h = String(host ?? "").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  if (!h) return true;
+  if (h.includes("vercel.app") && !h.endsWith("vercel.app")) return true;  // a *preview* subdomain
+  if (/\.preview\./.test(h)) return true;
+  if (h.includes("ngrok") || h.includes("trycloudflare") || h.includes("loca.lt")) return true;
+  return isPrivateHost(h);
+}
+
+/**
+ * The host a router may call indefinitely, plus whether it is safe to bake in.
+ *
+ * The heartbeat is installed on the router with no expiry, so an unstable host
+ * is a silent time bomb. When the host is not trustworthy the heartbeat is
+ * omitted and the reason is returned for the dashboard to show.
+ */
+export function stableCallbackBase(): { base: string; stable: boolean; reason: string } {
+  const explicit = process.env.NETPID_PUBLIC_URL?.trim();
+  if (explicit) {
+    const b = explicit.replace(/\/+$/, "");
+    return { base: b, stable: true, reason: `NETPID_PUBLIC_URL (${b}).` };
+  }
+  const vercel = process.env.VERCEL_URL?.trim();
+  if (vercel) {
+    const b = vercel.startsWith("http") ? vercel : `https://${vercel}`;
+    if (isEphemeralHost(b)) {
+      return {
+        base: b,
+        stable: false,
+        reason: `${b} is a preview or private address and will not exist long term. `
+          + "Set NETPID_PUBLIC_URL to the production host, or the heartbeat this installs will call a URL that 404s.",
+      };
+    }
+    return { base: b, stable: true, reason: `VERCEL_URL (${b}).` };
+  }
+  return {
+    base: "http://localhost:3000",
+    stable: false,
+    reason: "No public host is configured. The router cannot reach a localhost address, so the heartbeat is omitted.",
+  };
+}
+
 export interface SelectionInput {
   mode?: string | null;
   wan_interface?: string | null;

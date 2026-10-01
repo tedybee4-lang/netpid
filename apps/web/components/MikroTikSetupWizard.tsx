@@ -157,6 +157,7 @@ export default function MikroTikSetupWizard({
       }
       setScript(j.script);
       setWarnings(j.warnings ?? []);
+      if (j.heartbeat_note) setWarnings((w) => [...w, j.heartbeat_note]);
       setProgress(80);
       setStatus("CONFIGURED");
       stopPolling();

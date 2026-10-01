@@ -5,7 +5,8 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { decryptSecret } from "@/lib/secrets";
 import { buildConfigureScript } from "@/lib/mikrotik-provision-script";
 import {
-  decideCapabilities, hashToken, isExpired, tokenMatchesHash, validateSelection,
+  decideCapabilities, hashToken, isExpired, stableCallbackBase,
+  tokenMatchesHash, validateSelection,
 } from "@/lib/mikrotik-provision";
 
 export const dynamic = "force-dynamic";
@@ -106,7 +107,12 @@ const { data: defaults } = await svc.from("isp_router_defaults")
   }
 
   const routerId = session.router_id ?? session.id;
-  const origin = new URL(req.url).origin;
+  // The heartbeat is a permanent scheduler entry on the router, so it must
+  // point at a host that will still exist. A Vercel PREVIEW host is deleted
+  // when the branch goes; pointing at one leaves a router calling a dead URL
+  // forever. When the host is not stable the heartbeat is omitted and the
+  // reason is returned to the dashboard.
+  const cb = stableCallbackBase();
   const short = routerId.slice(0, 8);
 
   // WireGuard is included only when the box reported v7 AND NETPID has already
@@ -150,7 +156,9 @@ const { data: defaults } = await svc.from("isp_router_defaults")
     radiusCoaPort: Number(d.radius_coa_port ?? 3799),
     pppoeService: str("pppoe_service", "netpid-pppoe"),
     bridgeIface: str("lan_bridge", "bridge-lan"),
-    heartbeatUrl: `${origin}/api/provision/mikrotik/heartbeat/${short}`,
+    // An empty URL tells the generator to skip the scheduler entry rather than
+    // install one that can never succeed.
+    heartbeatUrl: cb.stable ? `${cb.base}/api/provision/mikrotik/heartbeat/${short}` : "",
     heartbeatName: `netpid-heartbeat-${short}`,
     wireguard,
   });
@@ -173,6 +181,11 @@ const { data: defaults } = await svc.from("isp_router_defaults")
     warnings: sel.warnings,
     capabilities: caps,
     wireguard_included: Boolean(wireguard),
+    // The heartbeat is a permanent scheduler entry on the router. If NETPID has
+    // no stable public host it is omitted rather than pointed at a preview URL
+    // that will 404 once the branch is deleted.
+    heartbeat_included: cb.stable,
+    heartbeat_note: cb.reason,
     // Named explicitly so the dashboard cannot imply more than is true.
     state: "CONFIGURED. Not ONLINE: NETPID must still confirm a RouterOS API health check.",
   }, { status: 200 });

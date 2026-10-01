@@ -115,17 +115,22 @@ export function buildBootstrapScript(opts: {
   c("Report it. RouterOS has no URL encoder, so spaces travel as '+' and are");
   c("decoded server side. /tool fetch performs a GET, which is all a router can");
   c("do without something extra installed first.");
-  p(":local npQ ($npV)");   // keep the version legible in the URL
-  p(":local npUrl (" + q(reg));
-  p("  . \"?board=\" . $npB");
-  p("  . \"&model=\" . $npM");
-  p("  . \"&version=\" . $npQ");
-  p("  . \"&arch=\" . $npA");
-  p("  . \"&cpu=\" . $npC");
-  p("  . \"&ram=\" . $npR");
-  p("  . \"&ifaces=\" . $npI");
-  p("  . \"&bridges=\" . $npG");
-  p(")");
+  c("");
+  c("The URL is built ONE STATEMENT PER LINE on purpose. An expression split");
+  c("across lines inside (...) is a syntax error on RouterOS: the parser");
+  c("reaches end-of-line still inside the parenthesis and gives up, reporting");
+  c("only a column number with no clue which line it was. Every statement");
+  c("below is therefore complete on its own line.");
+  // The FIRST append carries the "?", every later one "&". Getting this wrong
+  // sends ?board=x&board=y and the server sees only the last value.
+  const params: [string, string][] = [
+    ["board", "npB"], ["model", "npM"], ["version", "npQ"], ["arch", "npA"],
+    ["cpu", "npC"], ["ram", "npR"], ["ifaces", "npI"], ["bridges", "npG"],
+  ];
+  p(`:set npUrl ${q(reg)}`);
+  for (const [i, [k, v]] of params.entries()) {
+    p(`:set npUrl ($npUrl . ${q(`${i === 0 ? "?" : "&"}${k}=`)} . $${v})`);
+  }
   p(":do {");
   p("  /tool fetch mode=https keep-result=no url=$npUrl");
   p("  :put \"NETPID: hardware reported. Check the dashboard.\"");
@@ -414,16 +419,25 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p(`  :put "WireGuard: not configured on this router."`);
   }
   p("");
-  c("Heartbeat. A periodic GET back to NETPID, so a router NETPID cannot reach");
-  c("over its tunnel still proves it exists and reports in.");
-  const evt = `/tool fetch mode=https keep-result=no url=${o.heartbeatUrl}`;
-  p(`:if ([:len [/system scheduler find name=${q(hb)}]] = 0) do={`);
-  p(`  /system scheduler add name=${q(hb)} interval=00:05:00 on-event=${q(evt)} comment=${q(`${tag} heartbeat`)}`);
-  p(`  :put "heartbeat scheduler added (every 5 minutes)."`);   // closing quote
-  p(`} else={`);
-  p(`  /system scheduler set [find name=${q(hb)}] interval=00:05:00 on-event=${q(evt)}`);
-  p(`  :put "heartbeat scheduler updated."`);
-  p("}");
+
+  if (o.heartbeatUrl) {
+    c("Heartbeat. A periodic GET back to NETPID, so a router NETPID cannot reach");
+    c("over its tunnel still proves it exists and reports in.");
+    const evt = `/tool fetch mode=https keep-result=no url=${o.heartbeatUrl}`;
+    p(`:if ([:len [/system scheduler find name=${q(hb)}]] = 0) do={`);
+    p(`  /system scheduler add name=${q(hb)} interval=00:05:00 on-event=${q(evt)} comment=${q(`${tag} heartbeat`)}`);
+    p(`  :put "heartbeat scheduler added (every 5 minutes)."`);  // closing quote
+    p(`} else={`);
+    p(`  /system scheduler set [find name=${q(hb)}] interval=00:05:00 on-event=${q(evt)}`);
+    p(`  :put "heartbeat scheduler updated."`);
+    p("}");
+  } else {
+    c("HEARTBEAT NOT INSTALLED. NETPID has no stable public host configured, so");
+    c("there is no URL to point a permanent scheduler entry at. Installing one");
+    c("anyway would leave the router calling a host that will be deleted.");
+    c("Set NETPID_PUBLIC_URL to the production host and re-run to enable it.");
+    p(`  :put "heartbeat: NOT installed - NETPID public host is not configured."`);
+  }
   p("");
 // ---- 7. Report -----------------------------------------------------------
   rule();
@@ -443,7 +457,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   p(`:put ("Accounting    : " . [/ppp/aaa get accounting])`);
   p(`:put ("CoA accept    : " . [/radius incoming get accept])`);
   p(`:put ("WireGuard     : " . ${q(o.wireguard && v7 ? "configured" : "not configured")})`);
-  p(`:put ("Heartbeat     : " . [:len [/system scheduler find name=${q(hb)}]])`);
+  p(`:put ("Heartbeat     : " . ${q(o.heartbeatUrl ? "scheduler installed" : "NOT installed - no stable NETPID host")})`);
   p(`:put ""`);
   c("CONFIGURED is all this proves. NETPID marks the router ONLINE only after a");
   c("RouterOS API health check succeeds over the management path. Working");
