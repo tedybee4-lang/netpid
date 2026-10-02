@@ -5,13 +5,16 @@ import { readFileSync, readdirSync } from "node:fs";
 import {
   decideCapabilities, decodeParam, hashToken, isEphemeralHost, mintToken,
   parseBridges, parseRamMb, tokenMatchesHash, validateSelection,
-  buildDetectedInterfaces,
+  buildDetectedInterfaces, appendStepEvent, stepPlan,
 } from "../../apps/web/lib/mikrotik-provision.ts";
 import { buildConfigureScript, buildBootstrapScript } from "../../apps/web/lib/mikrotik-provision-script.ts";
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 const configureRoute = read("../../apps/web/app/api/provision/mikrotik/configure/[token]/route.ts");
 const bootstrapRoute = read("../../apps/web/app/api/provision/mikrotik/bootstrap/[token]/route.ts");
+const PROGRESS_ROUTE = read("../../apps/web/app/api/provision/mikrotik/progress/[token]/route.ts");
+const STATUS_ROUTE = read("../../apps/web/app/api/provision/mikrotik/status/[token]/route.ts");
+const WIZARD = read("../../apps/web/components/MikroTikSetupWizard.tsx");
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -664,8 +667,8 @@ test("both version-specific paths are asserted, not discovered in the field", ()
   // than a missing menu. Asserting the known pairs here means a third move
   // between 6 and 7 fails a test instead of a customer's router.
   assert.doesNotMatch(GEN, /\/ip radius/, "v7 must not use the v6 /ip radius path");
-  assert.match(GEN, /\/radius add service/, "v7 uses /radius");
-  assert.match(GEN_V6, /\/ip radius add service/, "v6 uses /ip radius");
+  assert.match(GEN, /\/radius add address=/, "v7 uses /radius");
+  assert.match(GEN_V6, /\/ip radius add address=/, "v6 uses /ip radius");
 });
 
 test("the RADIUS port properties are the long names", () => {
@@ -699,30 +702,107 @@ test("the HotSpot pool holds the range only, never the subnet it sits in", () =>
 });
 
 test("a version-specific property never takes the whole object down with it", () => {
-  // Field report, three separate failures in one run:
+  // Field report, two failures in one run:
   //
   //   bad parameter use-cookie (line 2 column 93)
   //   bad parameter dns-name  (line 2 column 134)
   //
-  // Both are properties that exist in RouterOS 6 and were removed in 7. An
-  // unknown property name rejects the ENTIRE line, so not only the cookie
-  // setting was lost - the HotSpot profile and the HotSpot server were never
-  // created at all, and the customer-facing portal silently did not exist.
+  // RouterOS rejects an ENTIRE command when it does not recognise a single
+  // property name in it. Both used to ride inside the same `add` as properties
+  // the object could not work without, so one bad name destroyed the whole
+  // HotSpot profile AND the whole HotSpot server: the portal silently did not
+  // exist, and - because a pasted multi-line script never prints the runtime
+  // error - the console showed a bare WARN with no cause.
   //
-  // Each is now attempted in a :do/on-error chain: try the v6 spelling, fall
-  // back to the v7 one, and if neither works say so and carry on. A spelling
-  // this generator gets wrong costs one setting, never the object.
-  for (const prop of ["use-cookie", "http-cookie-lifetime", "dns-name"]) {
-    const re = new RegExp(prop.replace("-", "\\-"));
-    assert.ok(re.test(GEN), `${prop} should appear in the script`);
-  }
-  // The fallbacks must be inside on-error blocks, not a single flat line.
+  // `use-cookie` is not a RouterOS property at all. The 7.24 CLI reference for
+  // ip/hotspot/profile lists `login-by`, whose values include `cookie`, plus
+  // `http-cookie-lifetime`. There is no on/off switch to get wrong.
+
+  // 1. The property that does not exist must never be emitted again.
+  assert.doesNotMatch(GEN, /use-cookie/, "use-cookie is not a RouterOS property");
+  assert.doesNotMatch(GEN_V6, /use-cookie/, "and it is not one on v6 either");
+
+  // 2. Cookie authentication is requested the way RouterOS actually spells it.
+  assert.match(GEN, /login-by=[^\s]*\bcookie\b/,
+    "cookie belongs INSIDE login-by, not in a separate switch");
+  assert.match(GEN, /http-cookie-lifetime=/, "and its lifetime is set explicitly");
+
+  // 3. dns-name is still requested, but never bundled into an `add` alongside
+  //    properties the server cannot work without.
+  assert.match(GEN, /dns-name=/, "dns-name is still requested");
+  assert.doesNotMatch(GEN, /\/ip hotspot add[^\n]*dns-name=/,
+    "dns-name must not ride in the add that creates the HotSpot server");
+  assert.doesNotMatch(GEN, /\/ip hotspot profile add[^\n]*(use-radius|login-by)=/,
+    "the profile add carries only the name it cannot work without");
+
+  // 4. Every optional property gets its own guard, so one refusal is one lost
+  //    setting rather than one lost object.
   const guards = [...GEN.matchAll(/on-error=\{/g)].length;
-  assert.ok(guards >= 4,
-    `expected the version traps to be guarded, found ${guards} on-error handlers`);
-  // And the bare (unguarded) forms must not be the only form present.
-  assert.ok(/use-cookie=yes login-by/.test(GEN), "the v6 spelling is tried first");
-  assert.ok(/http-cookie-lifetime=1h/.test(GEN), "the v7 fallback is tried too");
+  assert.ok(guards >= 12,
+    `expected a guard per optional property, found only ${guards}`);
+
+  // 5. Refusals are COLLECTED and reported, never swallowed by an empty
+  //    on-error. This is the whole point of the per-property shape.
+  assert.match(GEN, /:local npFail ""/, "the failure list is a declared local");
+  assert.match(GEN, /:set npFail \(\$npFail \. " " \. "profile\.use-radius"\)/,
+    "a refused profile property is recorded by name");
+  assert.match(GEN, /:set npFail \(\$npFail \. " " \. "hotspot\.dns-name"\)/,
+    "and so is a refused HotSpot server property");
+  assert.match(GEN, /:put \("  " \. \$npFail\)/, "the list is printed at the end");
+  assert.match(GEN, /^:set npFail ""$/m, "and the scratch variable is cleared");
+});
+
+test("the final report reads the router back instead of echoing what was asked", () => {
+  // The old report printed the REQUESTED values: a HotSpot that had failed to
+  // create still printed "RADIUS: configured", and every other line was a copy
+  // of the options that built the script. The one screen the operator relied on
+  // was the only thing structurally incapable of telling them it had failed.
+  assert.doesNotMatch(GEN, /:put \("RADIUS\s+: " \. "configured"\)/,
+    "RADIUS state must not be asserted from the request");
+  assert.doesNotMatch(GEN, /:put \("HotSpot\s+: " \. "ether2/,
+    "the port list is not proof the ports were bridged");
+
+  // Every object is probed with find/get against the live router.
+  for (const probe of [
+    /:if \(\[:len \[\/ip hotspot profile find name="netpid"\]\] > 0\)/,
+    /:if \(\[:len \[\/ip hotspot find name="netpid"\]\] > 0\)/,
+    /:if \(\[:len \[\/ip pool find name=/,
+    /:if \(\[:len \[\/interface bridge port find interface=ether2 where bridge="bridge-lan"\]\] > 0\)/,
+    /:if \(\[:len \[\/radius find address="10\.10\.0\.5"\]\] > 0\)/,
+  ]) {
+    assert.match(GEN, probe, "the report must probe the real router");
+  }
+
+  // And a missing object says so out loud.
+  assert.match(GEN, /MISSING/, "an object that is not there is reported as MISSING");
+  // Reading back must be guarded too: a property this build does not expose
+  // cannot be allowed to abort the report that is proving the work.
+  assert.match(GEN, /not exposed by this RouterOS/);
+});
+
+test("each step boundary calls back to NETPID so the dashboard can show progress", () => {
+  // The operator pastes a multi-line script into a serial console and then has
+  // nothing to look at until it finishes. Each step now GETs the progress URL,
+  // so /status can drive a live bar instead of sitting at 70%.
+  const s = buildConfigureScript(baseOpts({
+    progressUrl: "https://netpid.example/api/provision/mikrotik/progress/tok123",
+  }));
+
+  for (const id of ["start", "interfaces", "bridge", "hotspot", "radius", "management", "verify", "done"]) {
+    assert.match(s, new RegExp(`step=${id}&pct=\\d+`), `${id} reports progress`);
+  }
+
+  // Progress must never be able to stop the configuration. A dashboard that is
+  // down, slow or behind a captive portal costs a tick, not a half-built ISP.
+  const fetches = [...s.matchAll(/\/tool fetch[^\n]*progress\/tok123[^\n]*/g)];
+  assert.ok(fetches.length >= 8, `expected a callback per step, found ${fetches.length}`);
+  for (const f of fetches) {
+    assert.match(f[0], /on-error=\{ \}$/, "every progress callback is guarded");
+  }
+
+  // No URL is invented when the caller does not supply one.
+  const bare = buildConfigureScript(baseOpts());
+  assert.doesNotMatch(bare, /progress\//, "no progress URL means no callbacks at all");
 });
 
 test("RADIUS is skipped cleanly when the ISP has no server configured", () => {
@@ -735,7 +815,7 @@ test("RADIUS is skipped cleanly when the ISP has no server configured", () => {
   assert.doesNotMatch(s, /\/radius add/, "no add is emitted without a server address");
   assert.match(s, /SKIP RADIUS/, "and the operator is told why");
   // With both present it is still created.
-  assert.match(GEN, /\/radius add service=/, "a complete pair still creates the entry");
+  assert.match(GEN, /\/radius add address=/, "a complete pair still creates the entry");
 });
 
 test("every mode demands its own ports", () => {
@@ -1228,6 +1308,122 @@ test("configure refuses before the router has reported its hardware", () => {
 // Counting braces textually does not work: template literals and regex
 // literals contain braces that are not block delimiters. The runtime already
 // knows the real answer, so ask it.
+const MIG_0049 = read("../../supabase/migrations/0049_provisioning_step_log.sql");
+
+test("the step log clamps what the router claims and never walks backwards", () => {
+  // pct arrives off a query string and progress_pct has a CHECK constraint, so
+  // a router reporting 400 would fail the whole UPDATE and lose the step too.
+  assert.equal(appendStepEvent([], "start", 999).at(-1)?.pct, 100);
+  assert.equal(appendStepEvent([], "start", -5).at(-1)?.pct, 0);
+  assert.equal(appendStepEvent([], "start", "abc").at(-1)?.pct, 0);
+  assert.equal(appendStepEvent([], "start", Number.NaN).at(-1)?.pct, 0);
+
+  // A retried fetch for a step already recorded must not duplicate it, or the
+  // checklist fills with repeats of work that did not happen.
+  const once = appendStepEvent([], "bridge", 30);
+  assert.deepEqual(appendStepEvent(once, "bridge", 30), once);
+
+  // A late callback for an earlier step must not rewind the bar.
+  const fwd = appendStepEvent(appendStepEvent([], "hotspot", 45), "radius", 70);
+  const back = appendStepEvent(fwd, "bridge", 30);
+  assert.equal(back.at(-1)?.pct, 70, "the newest entry keeps the highest percentage");
+
+  // Garbage in the column must not throw; the wizard renders whatever it gets.
+  assert.equal(appendStepEvent(null, "start", 5).at(-1)?.step, "start");
+  assert.equal(appendStepEvent("nonsense", "start", 5).at(-1)?.step, "start");
+});
+
+test("the step plan matches the mode the operator chose", () => {
+  // The script has no PPPoE section in HotSpot-only mode, so showing a PPPoE row
+  // that can never tick is a dead promise on the operator's screen.
+  const hs = stepPlan("HOTSPOT");
+  assert.ok(!hs.includes("pppoe"), "HotSpot-only never reports PPPoE");
+  assert.ok(hs.includes("hotspot"));
+  assert.deepEqual(hs.slice(0, 3), ["start", "interfaces", "bridge"]);
+  assert.equal(hs.at(-1), "done", "every run ends by verifying");
+
+  const pp = stepPlan("PPPOE");
+  assert.ok(pp.includes("pppoe") && !pp.includes("hotspot"));
+
+  const both = stepPlan("HOTSPOT_PPPOE");
+  assert.ok(both.includes("hotspot") && both.includes("pppoe"));
+  // HotSpot is section 3 and PPPoE is section 4, so this is the order the
+  // router actually reports them in.
+  assert.ok(both.indexOf("hotspot") < both.indexOf("pppoe"));
+
+  // Nothing selected yet must still yield a usable list.
+  assert.ok(stepPlan(null).length > 0);
+});
+
+test("the wizard renders the router's reported steps and keeps listening", () => {
+  // The wizard used to call stopPolling() the moment the script was generated,
+  // which is exactly wrong: the operator has not pasted anything yet, and the
+  // router only starts reporting once they do. The bar could never move again.
+  assert.doesNotMatch(WIZARD, /setScript\(j\.script\);[\s\S]{0,500}?stopPolling\(\)/,
+    "generating the script must not stop the poll");
+  assert.match(WIZARD, /setScript\(j\.script\);[\s\S]{0,700}?startPolling\(token\)/,
+    "it must keep polling so the router's steps arrive");
+
+  // CONFIGURED is the status the session sits at DURING the run, so it cannot
+  // be treated as terminal any more.
+  assert.doesNotMatch(WIZARD, /j\.status === "CONFIGURED" \|\| j\.status === "FAILED"/,
+    "CONFIGURED is not the end of the run");
+  assert.match(WIZARD, /s\.step === "done"/, "the router's final tick ends the poll");
+
+  // And the screen must show the steps, not just a percentage.
+  assert.match(WIZARD, /shownSteps\.map/, "the reported steps are rendered");
+  assert.match(WIZARD, /setSteps\(j\.steps\)/, "the poll stores what the router said");
+  assert.doesNotMatch(WIZARD, /script generated/,
+    "the old frozen caption is gone");
+
+  // The plan is server-supplied: the wizard cannot import the step vocabulary,
+  // because mikrotik-provision.ts pulls in node:crypto.
+  assert.match(STATUS_ROUTE, /plan,/, "/status ships the labelled plan");
+});
+
+test("progress callbacks are omitted rather than pointed at a preview host", () => {
+  // Same rule as the heartbeat: a script is permanent, a Vercel preview URL is
+  // deleted with the branch, and pointing one at it means calling a dead host
+  // forever. cb.stable gates both.
+  assert.match(configureRoute, /progressUrl: cb\.stable \? `\$\{cb\.base\}\/api\/provision\/mikrotik\/progress\/\$\{token\}` : ""/,
+    "the progress URL is gated on a stable host");
+  assert.match(configureRoute, /progress_included: cb\.stable/,
+    "and the dashboard is told which it got");
+});
+
+test("the progress endpoint cannot resurrect a cancelled session", () => {
+  // A router still working through a script issued before a cancellation must
+  // not be able to write the session back to life.
+  assert.match(PROGRESS_ROUTE, /status === "CANCELLED" \|\| session\.status === "EXPIRED"/,
+    "cancelled and expired sessions are refused");
+  assert.match(PROGRESS_ROUTE, /pct >= \(session\.progress_pct \?\? 0\)/,
+    "the stored percentage never regresses");
+  assert.match(PROGRESS_ROUTE, /tokenMatchesHash/,
+    "the token is still verified in constant time");
+  // It must never move the session past CONFIGURED on its own: reaching a step
+  // is not proof that any object was created.
+  assert.doesNotMatch(PROGRESS_ROUTE, /status: "(APPLIED|ONLINE)"/,
+    "progress alone must not mark the session applied");
+});
+
+test("0049 declares step_log idempotently and proves it", () => {
+  assert.match(MIG_0049, /add column if not exists step_log jsonb/, "replay safe");
+  assert.match(MIG_0049, /raise exception/, "and it proves the column is visible");
+  assert.match(MIG_0049, /not proof|not evidence/i,
+    "and it states that a step is not proof of configuration");
+
+  // The progress route reads this column, so it must exist in the schema the
+  // app talks to - either declared in 0047's CREATE TABLE or added by 0049.
+  // declaredColumns only understands CREATE TABLE, so ADD COLUMN is read here.
+  const added = new Set(
+    [...MIG_0049.matchAll(/add column if not exists (\w+)/g)].map((m) => m[1]),
+  );
+  assert.ok(
+    declaredColumns(MIG_0047).has("step_log") || added.has("step_log"),
+    "step_log is declared in the schema the progress route reads",
+  );
+});
+
 test("every test() in this file is actually registered", async () => {
   const mod = await import("./mikrotik-provision.test.js");
   const declared = readFileSync(new URL(import.meta.url), "utf8")

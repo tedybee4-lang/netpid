@@ -29,6 +29,19 @@ interface Bridge { name: string; ports: string[] }
 interface Capability { supported: boolean; reason: string }
 interface Caps { wireguard?: Capability; rosMajor?: number | null }
 
+/** One router-reported step, as /status maps it. */
+interface Step { step: string; pct: number; at: string; label: string }
+
+/**
+ * The order the script reports in, so the operator can see what is still to come
+ * instead of only what has happened. `pppoe` is absent from the HotSpot-only
+ * run; the server simply never reports it and it drops off the list.
+ */
+const RUN_STEPS = [
+  "start", "interfaces", "bridge", "hotspot",
+  "pppoe", "radius", "management", "verify", "done",
+] as const;
+
 const STEPS = ["Connect", "Detect", "Configure", "Apply"] as const;
 const MODES: Mode[] = ["HOTSPOT", "PPPOE", "HOTSPOT_PPPOE"];
 const modeLabel = (m: Mode) =>
@@ -103,6 +116,9 @@ export default function MikroTikSetupWizard({
   const [script, setScript] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
+  const [steps, setSteps] = useState<Step[]>([]);
+  /** The ordered, labelled steps this run will report, from /status. */
+  const [plan, setPlan] = useState<Array<{ step: string; label: string }>>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -124,15 +140,32 @@ export default function MikroTikSetupWizard({
       setCaps(j.capabilities ?? null);
       setDetectError(j.error_message ?? null);
       setProgress(j.progress_pct ?? 0);
+      // The router's own account of the run. This is what turns a frozen bar
+      // into a checklist the operator can watch move.
+      if (Array.isArray(j.steps)) setSteps(j.steps);
+      if (Array.isArray(j.plan)) setPlan(j.plan);
       if (Array.isArray(j.interfaces)) {
         setIfaces(j.interfaces);
         setBridges(j.bridges ?? []);
         // Preselect the most likely WAN once, so the common case needs no taps.
         setWan((w) => w || (j.interfaces.find((i: Iface) => i.is_candidate_wan)?.name ?? ""));
       }
-      if (j.status === "CONFIGURED" || j.status === "FAILED") stopPolling();
+      // CONFIGURED is NOT a stopping point any more: that is the status the
+      // session sits at while the operator pastes the script and the router
+      // works through it. Only a terminal status or the script's own final
+      // `done` tick ends the poll.
+      const finished = Array.isArray(j.steps) && j.steps.some((s: Step) => s.step === "done");
+      if (finished || ["FAILED", "EXPIRED", "CANCELLED", "APPLIED"].includes(j.status)) {
+        stopPolling();
+      }
     } catch { /* a dropped poll is not fatal; the next retries */ }
   }, [stopPolling]);
+
+  /** Starts (or restarts) the 2s poll. Safe to call more than once. */
+  const startPolling = useCallback((t: string) => {
+    stopPolling();
+    pollRef.current = setInterval(() => poll(t), 2000);
+  }, [stopPolling, poll]);
 
   async function start() {
     setBusy(true); setErr(null);
@@ -147,8 +180,8 @@ export default function MikroTikSetupWizard({
       setToken(j.token);
       setCommand(j.command);
       setProgress(10);
-      stopPolling();
-      pollRef.current = setInterval(() => poll(j.token), 2000);
+      setSteps([]);
+      startPolling(j.token);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Could not start provisioning");
     } finally { setBusy(false); }
@@ -184,13 +217,40 @@ export default function MikroTikSetupWizard({
       if (j.heartbeat_note) setWarnings((w) => [...w, j.heartbeat_note]);
       setProgress(80);
       setStatus("CONFIGURED");
-      stopPolling();
+      // Keep polling. The operator has not pasted anything yet, and the moment
+      // they do the router starts reporting each step - the wizard has to still
+      // be listening then. This used to stop the poll here, which is why the
+      // bar could never move again.
+      setSteps([]);
+      startPolling(token);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Could not build the script");
     } finally { setBusy(false); }
   }
 
   const step = !token ? 0 : status === "CAPABILITIES_DETECTED" ? 2 : script ? 3 : 1;
+
+  // ---- Live run progress -------------------------------------------------
+  // The router reports each boundary; these turn that stream into rows the
+  // operator can read. The PLAN comes from the server (it knows the step
+  // vocabulary and the mode), so pending rows can be shown before the router
+  // has reported anything at all.
+  const done = new Set(steps.map((s) => s.step));
+  const finished = done.has("done");
+  // Once the script is on the router its own percentage is the truth; before
+  // that the wizard's 70/80 marks are the only numbers there are.
+  const livePct = steps.length ? steps[steps.length - 1].pct : progress;
+
+  const shownSteps: Array<{ id: string; label: string; state: "done" | "current" | "pending" }> =
+    (plan.length ? plan : RUN_STEPS.map((id) => ({ step: id, label: id })))
+      .filter((p) => p.step !== "pppoe" || mode !== "HOTSPOT")
+      .map((p) => ({
+        id: p.step,
+        label: p.label,
+        state: done.has(p.step) ? "done" : finished ? "pending"
+          : steps.length === 0 ? "pending" : "current",
+      }));
+
   const eth = ifaces.filter((i) => i.type === "ethernet");
   // Wireless can serve customers, so it belongs in the HotSpot picker. It is
   // never a WAN candidate and never a PPPoE port: a radio cannot be enslaved to
@@ -411,11 +471,56 @@ export default function MikroTikSetupWizard({
             Pasted does not mean online. NETPID marks this router ONLINE only
             after a RouterOS API health check succeeds over the management path.
           </p>
-          <div>
-            <div className="mb-1 h-2 w-full rounded bg-slate-200">
-              <div className="h-2 rounded bg-emerald-600 transition-all" style={{ width: `${progress}%` }} />
+
+          {/* Live progress, reported by the ROUTER as it runs the script.
+              Before this the panel showed one frozen caption forever, which was
+              identical whether the operator had not pasted yet, was three lines
+              in, or had just finished. */}
+          <div className="space-y-2" aria-live="polite">
+            <div>
+              <div className="mb-1 h-2 w-full rounded bg-slate-200">
+                <div className="h-2 rounded bg-emerald-600 transition-all"
+                  style={{ width: `${Math.max(progress, livePct)}%` }} />
+              </div>
+              <p className="hint">
+                {steps.length === 0
+                  ? `${livePct}% — paste the script on the router to start`
+                  : `${livePct}% — ${steps[steps.length - 1].label}`}
+              </p>
             </div>
-            <p className="hint" aria-live="polite">{progress}% — script generated</p>
+
+            <ol className="space-y-1 text-sm">
+              {shownSteps.map((s) => (
+                <li key={s.id} className="flex items-start gap-2">
+                  <span aria-hidden="true"
+                    className={s.state === "done" ? "text-emerald-700"
+                      : s.state === "current" ? "text-amber-600" : "text-slate-400"}>
+                    {s.state === "done" ? "✓" : s.state === "current" ? "▸" : "·"}
+                  </span>
+                  <span className={s.state === "pending" ? "text-slate-400" : ""}>
+                    {s.label}
+                  </span>
+                  <span className="sr-only">
+                    {s.state === "done" ? "completed" : s.state === "current" ? "in progress" : "not started"}
+                  </span>
+                </li>
+              ))}
+            </ol>
+
+            {finished && (
+              <p className="hint font-semibold">
+                The router finished the script. Read the CONFIGURATION REPORT it
+                printed: it lists any property this RouterOS refused, and shows
+                which objects it found missing.
+              </p>
+            )}
+            {!finished && steps.length > 0 && (
+              <p className="hint">
+                These steps mean the router REACHED them. They are not proof the
+                objects were created - the report at the end of the script reads
+                the router back and prints what actually exists.
+              </p>
+            )}
           </div>
         </section>
       )}

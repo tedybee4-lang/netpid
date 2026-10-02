@@ -246,6 +246,12 @@ export interface ConfigureOptions {
   heartbeatUrl: string;
   bridgeIface: string;
   heartbeatName: string;
+  /**
+   * Where the router GETs each step boundary so the dashboard can show live
+   * progress. Empty disables the callbacks entirely - the script must never
+   * depend on NETPID being reachable to finish configuring a router.
+   */
+  progressUrl?: string;
 }
 
 /**
@@ -284,6 +290,46 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   const c = (s: string) => p(`# ${s}`);
   const rule = () => p(`# ${"=".repeat(68)}`);
 
+  // ---------------------------------------------------------------------------
+  // THE THREE EMITTERS EVERY SECTION BELOW IS BUILT FROM
+  // ---------------------------------------------------------------------------
+  //
+  // `step` reports a boundary back to NETPID so the dashboard can show progress
+  // instead of a frozen bar. It is a GET for the same reason the bootstrap is:
+  // it is the one HTTP verb a factory-fresh box of EITHER major version can
+  // issue with nothing installed. Every call is wrapped so a dashboard that is
+  // down, slow or unreachable costs the operator nothing but a missing tick.
+  //
+  // `setp` applies ONE property with its own guard.
+  //
+  // This is the change that makes the script work on RouterOS builds nobody has
+  // tested against. The previous shape was one `add` carrying six properties,
+  // so a single property this RouterOS does not have rejected the WHOLE command
+  // and the object was never created - and because a pasted multi-line script
+  // never prints the runtime error (RouterOS has no error variable in on-error,
+  // and the console only echoes what was pasted), the operator saw a WARN with
+  // no cause and no HotSpot at all. One property, one guard, one recorded
+  // failure: the object survives, and the report names the exact property.
+  const progressBase = String(o.progressUrl ?? "").trim();
+  const step = (id: string, pct: number) => {
+    if (!progressBase) return;
+    p(`:do { /tool fetch mode=https keep-result=no url=${q(`${progressBase}?step=${id}&pct=${pct}`)} } on-error={ }`);
+  };
+
+  /** Records a property this RouterOS refused. Printed in the final report. */
+  const fail = (label: string) => {
+    p(`  :set npFail ($npFail . " " . ${q(label)})`);
+  };
+
+  /** `/menu set <target> <prop=value>` with an independent guard. */
+  const setp = (menu: string, target: string, prop: string, label: string) => {
+    p(`:do {`);
+    p(`  ${menu} set ${target} ${prop}`);
+    p(`} on-error={`);
+    fail(label);
+    p(`}`);
+  };
+
   rule();
   c(`NETPID configuration — router ${tag}`);
   c("");
@@ -298,11 +344,23 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   c("Safe to re-run.");
   rule();
   p("");
+  c("PROPERTY-HANDLING RULE. Every object below is created with the minimum");
+  c("number of properties that must succeed, and every further property is then");
+  c("set ONE AT A TIME inside its own guard. RouterOS rejects an entire command");
+  c("when it does not recognise a single property name in it, so the old shape -");
+  c("one `add` carrying six properties - meant one unsupported name destroyed");
+  c("the whole object. Anything this RouterOS refuses is collected in the failure");
+  c("list printed at the end instead of vanishing silently.");
+  p("");
+  p(`:local npFail ""`);
+  step("start", 5);
+  p("");
 
   // ---- 1. Interfaces -------------------------------------------------------
   rule();
   c("1. INTERFACES");
   rule();
+  step("interfaces", 15);
   p("");
   c("The WAN is left on DHCP. NETPID can drive a static address later; a wrong");
   c("gateway set here would take the router offline for everyone behind it.");
@@ -337,6 +395,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   rule();
   c("2. BRIDGE");
   rule();
+  step("bridge", 30);
   p("");
   c("One bridge holds the customer ports. Ports named by the operator are");
   c("moved into it; nothing else is.");
@@ -379,31 +438,47 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     rule();
     c("3. HOTSPOT");
     rule();
+    step("hotspot", 45);
     p("");
     c("RADIUS is the authentication authority. NO local hotspot user is");
     c("created: that would be an account nobody bills and nobody can revoke.");
-    // The cookie setting is a version trap. RouterOS 6 has use-cookie=yes;
-    // RouterOS 7 removed it and exposes http-cookie-lifetime instead. Guessing
-    // wrong fails the WHOLE line, so the profile is never created at all and
-    // the portal silently does not exist.
+    // `use-cookie` DOES NOT EXIST. It is what this script used to send, it was
+    // rejected, and because it rode along with five other properties in the
+    // same `add` it took the entire profile with it - the router ended up with
+    // NO HotSpot profile at all while the console printed a bare WARN.
     //
-    // Rather than bet on one spelling, both are tried and the outcome is
-    // reported. An unknown property name must never cost the operator the rest
-    // of the profile.
+    // The RouterOS 7.24 CLI reference gives the real property list for
+    // ip/hotspot/profile:
+    //   login-by  (mac | cookie | http-chap | https | http-pap | trial | mac-cookie)
+    //   http-cookie-lifetime   time
+    //   use-radius, radius-interim-update, nas-port-type, radius-mac-format, ...
+    //
+    // There is no on/off switch to get wrong: cookie authentication is requested
+    // by putting `cookie` INSIDE login-by, and how long it lives is
+    // http-cookie-lifetime.
+    const PROFILE = "[find name=netpid]";
     p(`:if ([:len [/ip hotspot profile find name=netpid]] = 0) do={`);
     p(`  :do {`);
-    p(`    /ip hotspot profile add name=netpid use-radius=yes radius-interim-update=5m use-cookie=yes login-by=http-chap,https,http-pap comment=${q(`${tag} hs-profile`)}`);
+    p(`    /ip hotspot profile add name=netpid comment=${q(`${tag} hs-profile`)}`);
+    p(`    :put "HotSpot profile created."`);
     p(`  } on-error={`);
-    p(`    :do {`);
-    p(`      /ip hotspot profile add name=netpid use-radius=yes radius-interim-update=5m http-cookie-lifetime=1h login-by=http-chap,https,http-pap comment=${q(`${tag} hs-profile`)}`);
-    p(`    } on-error={`);
-    p(`      :put "WARN: could not create the HotSpot profile; see the error above."`);
-    p(`    }`);
+    p(`    :put "FATAL: the HotSpot profile could not be created at all."`);
+    fail("profile.add");
     p(`  }`);
-    p("} else={");
-    p(`  :do { /ip hotspot profile set [find name=netpid] use-radius=yes radius-interim-update=5m } on-error={ :do { /ip hotspot profile set [find name=netpid] use-radius=yes radius-interim-update=5m } on-error={ } }`);
-    p("}");
+    p(`} else={`);
+    p(`  :put "HotSpot profile reused."`);
+    p(`}`);
     p("");
+    c("Each remaining property is applied on its own. If this RouterOS refuses");
+    c("one, the profile still exists and the exact property is named in the");
+    c("failure list at the end of this script.");
+    setp("/ip hotspot profile", PROFILE, "use-radius=yes", "profile.use-radius");
+    setp("/ip hotspot profile", PROFILE, "radius-interim-update=5m", "profile.radius-interim-update");
+    setp("/ip hotspot profile", PROFILE, "login-by=http-chap,https,http-pap,cookie", "profile.login-by");
+    setp("/ip hotspot profile", PROFILE, "http-cookie-lifetime=1d", "profile.http-cookie-lifetime");
+    setp("/ip hotspot profile", PROFILE, "nas-port-type=ethernet", "profile.nas-port-type");
+    p("");
+
     if (o.hotspotSubnet && o.hotspotRange) {
       c("The portal pool range is SUPPLIED, not derived: RouterOS [:pick] is");
       c("1-based and a 0 index silently yields nothing, which would hand every");
@@ -417,26 +492,35 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       p(`  /ip pool add name=${q(o.hotspotRange)} ranges=${q(o.hotspotRange)} comment=${q(`${tag} hs-pool`)}`);
       p("}");
       p("");
-      // dns-name is a second version trap: it exists in RouterOS 6 and was
-      // removed in 7. Setting it unguarded fails the entire /ip hotspot add, so
-      // the customer-facing portal is never created even though everything else
-      // about it is correct. Tried first, then omitted, and the operator is
-      // told what is left to do by hand.
+      // The HotSpot SERVER is built the same way: the three properties it cannot
+      // function without go in the `add`, everything else is set separately.
+      //
+      // `dns-name` and `address-type` were previously bundled into the `add`.
+      // On this RouterOS that combination rejected the whole command and no
+      // HotSpot server was created at all - a portal that clients can associate
+      // with and never get a login page from. Neither is load-bearing, so
+      // neither is allowed to be able to destroy the object.
+      const HS = "[find name=netpid]";
       p(`:if ([:len [/ip hotspot find name=netpid]] = 0) do={`);
       p(`  :do {`);
-      p(`    /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid address-pool=${q(o.hotspotRange)} dns-name=${q(o.hotspotDnsName)} add-default-route=yes address-type=ethernet comment=${q(`${tag} hotspot`)}`);
+      p(`    /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid comment=${q(`${tag} hotspot`)}`);
+      p(`    :put ("HotSpot server created on " . ${q(o.bridgeIface)} . ".")`);
       p(`  } on-error={`);
-      p(`    :do {`);
-      p(`      /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid address-pool=${q(o.hotspotRange)} add-default-route=yes address-type=ethernet comment=${q(`${tag} hotspot`)}`);
-      p(`      :put "HotSpot created WITHOUT a DNS name."`);
-      p(`      :put ("Add a DNS record for " . ${q(o.hotspotDnsName)} . " pointing at the router, and set it on the HotSpot server.")`);
-      p(`    } on-error={`);
-      p(`      :put ("FAILED to create the HotSpot server on " . ${q(o.bridgeIface)} . ". See the error above.")`);
-      p(`    }`);
+      p(`    :put "FATAL: the HotSpot server could not be created at all."`);
+      fail("hotspot.add");
       p(`  }`);
-      p("} else={");
-      p(`  :do { /ip hotspot set [find name=netpid] profile=netpid add-default-route=yes dns-name=${q(o.hotspotDnsName)} address-pool=${q(o.hotspotRange)} } on-error={ :do { /ip hotspot set [find name=netpid] profile=netpid add-default-route=yes address-pool=${q(o.hotspotRange)} } on-error={ :put "WARN: could not update the HotSpot server." } }`);
-      p("}");
+      p(`} else={`);
+      p(`  :put "HotSpot server reused."`);
+      p(`}`);
+      p("");
+      setp("/ip hotspot", HS, `address-pool=${q(o.hotspotRange)}`, "hotspot.address-pool");
+      setp("/ip hotspot", HS, "add-default-route=yes", "hotspot.add-default-route");
+      setp("/ip hotspot", HS, `dns-name=${q(o.hotspotDnsName)}`, "hotspot.dns-name");
+      setp("/ip hotspot", HS, "address-type=ethernet", "hotspot.address-type");
+      p("");
+      c("If dns-name above is in the failure list, this RouterOS build does not");
+      c("expose it on the HotSpot server. Create the DNS record anyway:");
+      p(`  :put ("  " . ${q(o.hotspotDnsName)} . " -> this router's WAN address")`);
     } else {
       c("No HotSpot subnet or range was supplied, so no HotSpot server was");
       c("created. A half-built portal is worse than none: clients associate and");
@@ -486,6 +570,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   rule();
   c("5. RADIUS (auth, accounting, CoA)");
   rule();
+  step("radius", 70);
   p("");
   if (v7) {
     c("RouterOS 7 promoted RADIUS out of /ip. A 7.x box answers \"bad command");
@@ -508,20 +593,38 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     c("emitting a line that would fail with a misleading error.");
   }
   if (radiusUsable) {
-    p(`:if ([:len [${RM} find comment=${q(`NETPID:${o.nasShortname}`)}]] = 0) do={`);
-    // The port properties are authentication-port and accounting-port.
-    // auth-port and acct-port do not exist, so the whole line is rejected and
-    // the RADIUS client is never created - PPPoE then authenticates against
-    // nothing and every subscriber looks like a bad password. The sibling
-    // generator in this repo (routeros.mjs) has used the long names all along
-    // and its test asserts them; the wizard's copy had drifted to the short
-    // names and nothing caught the divergence.
-    p(`  ${RM} add service=ppp,hotspot address=${q(o.radiusServer)} secret=${q(o.radiusSecret)} authentication-port=${o.radiusAuthPort} accounting-port=${o.radiusAcctPort} timeout=1500ms comment=${q(`NETPID:${o.nasShortname}`)}`);
-    p(`  :put "RADIUS entry created."`);
-    p("} else={");
-    p(`  ${RM} set [find comment=${q(`NETPID:${o.nasShortname}`)}] secret=${q(o.radiusSecret)} authentication-port=${o.radiusAuthPort} accounting-port=${o.radiusAcctPort}`);
-    p(`  :put "RADIUS entry updated."`);
-    p("}");
+    // The entry is found by `address`, which the CLI reference marks MANDATORY,
+    // rather than by `comment`. That matters: the old lookup was
+    // `find comment=NETPID:<nas>`, so if this RouterOS build ever refused the
+    // comment the entry would never be found on a re-run and a DUPLICATE RADIUS
+    // client would be created instead - two clients, the wrong secret winning at
+    // random. `address` is the one property a RADIUS entry cannot be without.
+    const RAD = `[find address=${q(o.radiusServer)}]`;
+    p(`:if ([:len [${RM} find address=${q(o.radiusServer)}]] = 0) do={`);
+    // The port properties are authentication-port and accounting-port. auth-port
+    // and acct-port do not exist, so a line using them is rejected whole and the
+    // RADIUS client is never created - PPPoE then authenticates against nothing
+    // and every subscriber looks like a bad password.
+    p(`  :do {`);
+    p(`    ${RM} add address=${q(o.radiusServer)} secret=${q(o.radiusSecret)} comment=${q(`NETPID:${o.nasShortname}`)}`);
+    p(`    :put "RADIUS entry created."`);
+    p(`  } on-error={`);
+    p(`    :put "FATAL: the RADIUS client could not be created."`);
+    fail("radius.add");
+    p(`  }`);
+    p(`} else={`);
+    p(`  :put "RADIUS entry reused."`);
+    p(`}`);
+    p("");
+    c("Same rule as the HotSpot objects: address and secret are the only things");
+    c("this menu cannot work without, so only those go in the add. Each remaining");
+    c("property is set on its own below.");
+    setp(RM, RAD, "service=ppp,hotspot", "radius.service");
+    setp(RM, RAD, `secret=${q(o.radiusSecret)}`, "radius.secret");
+    setp(RM, RAD, `authentication-port=${o.radiusAuthPort}`, "radius.authentication-port");
+    setp(RM, RAD, `accounting-port=${o.radiusAcctPort}`, "radius.accounting-port");
+    setp(RM, RAD, "timeout=1500ms", "radius.timeout");
+    setp(RM, RAD, `comment=${q(`NETPID:${o.nasShortname}`)}`, "radius.comment");
   } else {
     c("NO secret was supplied, so NO radius entry is created. A client with no");
     c("secret fails every login, which looks like a FreeRADIUS fault rather than");
@@ -540,6 +643,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   rule();
   c("6. MANAGEMENT");
   rule();
+  step("management", 85);
   p("");
   if (o.wireguard && v7) {
     c("WireGuard is included because this router reported RouterOS 7 and");
@@ -600,24 +704,118 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   c("7. WHAT THIS SCRIPT DID AND DID NOT DO");
   rule();
   p("");
+  c("Everything below is READ BACK FROM THE ROUTER, not echoed from what this");
+  c("script asked for. The old report printed the requested values, so a HotSpot");
+  c("that was never created still reported \"RADIUS: configured\" - the one screen");
+  c("the operator relied on was the only thing that could not tell them it failed.");
+  step("verify", 95);
+  p("");
   p(`:put ""`);
   p(`:put "================== NETPID CONFIGURATION REPORT =================="`);
-  p(`:put ("Mode          : " . ${q(o.mode)})`);
   p(`:put ("RouterOS      : " . [/system resource get version])`);
   p(`:put ("Board         : " . [/system resource get board-name])`);
-  p(`:put ("WAN           : " . ${q(wan)})`);
-  p(`:put ("Bridge        : " . ${q(o.bridgeIface)})`);
-  p(`:put ("HotSpot       : " . ${q(o.hotspotPorts.length ? o.hotspotPorts.join(",") : "not configured")})`);
-  p(`:put ("PPPoE         : " . ${q(o.pppoePorts.length ? o.pppoePorts.join(",") : "not configured")})`);
-  p(`:put ("RADIUS        : " . ${q(o.radiusSecret ? "configured" : "SKIPPED - no secret")})`);
-  p(`:put ("Accounting    : " . [/ppp/aaa get accounting])`);
-  p(`:put ("CoA accept    : " . [/radius incoming get accept])`);
-  p(`:put ("WireGuard     : " . ${q(o.wireguard && v7 ? "configured" : "not configured")})`);
-  p(`:put ("Heartbeat     : " . ${q(o.heartbeatUrl ? "scheduler installed" : "NOT installed - no stable NETPID host")})`);
+  p(`:put ("Mode          : " . ${q(o.mode)})`);
   p(`:put ""`);
-  c("CONFIGURED is all this proves. NETPID marks the router ONLINE only after a");
-  c("RouterOS API health check succeeds over the management path. Working");
-  c("RADIUS does not make a router online.");
+  p(`:put "-- VERIFIED ON THE ROUTER --"`);
+
+  // Each block below prints the object's own state, or MISSING. A MISSING line
+  // is the honest answer; the requested value would be a lie.
+  const verify = (menu: string, name: string, reads: [string, string][], label: string) => {
+    p(`:if ([:len [${menu} find name=${q(name)}]] > 0) do={`);
+    for (const [prop, text] of reads) {
+      p(`  :do {`);
+      p(`    :put (${q(`    ${text}: `)} . [${menu} get [find name=${q(name)}] ${prop}])`);
+      p(`  } on-error={ :put ${q(`    ${text}: (not exposed by this RouterOS)`)} }`);
+    }
+    p(`} else={`);
+    p(`  :put ${q(`  ${label} ${name}: MISSING - it was not created.`)}`);
+    p(`}`);
+    p("");
+  };
+
+  verify("/ip hotspot profile", "netpid", [
+    ["use-radius", "profile use-radius"],
+    ["login-by", "profile login-by"],
+    ["http-cookie-lifetime", "profile cookie-lifetime"],
+  ], "profile");
+
+  if (o.hotspotSubnet && o.hotspotRange) {
+    verify("/ip hotspot", "netpid", [
+      ["interface", "hotspot interface"],
+      ["profile", "hotspot profile"],
+      ["address-pool", "hotspot address-pool"],
+      ["add-default-route", "hotspot default-route"],
+    ], "hotspot");
+
+    p(`:if ([:len [/ip pool find name=${q(o.hotspotRange)}]] > 0) do={`);
+    p(`  :put ("  pool ${o.hotspotRange}: present")`);
+    p(`} else={`);
+    p(`  :put ${q(`  pool ${o.hotspotRange}: MISSING`)}`);
+    p(`}`);
+    p("");
+  }
+
+  p(`:if ([:len [/interface bridge find name=${q(o.bridgeIface)}]] > 0) do={`);
+  p(`  :put ("  bridge ${o.bridgeIface}: present")`);
+  for (const port of [...o.hotspotPorts, ...o.pppoePorts]) {
+    const sp = safeIface(port);
+    p(`  :if ([:len [/interface bridge port find interface=${sp} where bridge=${q(o.bridgeIface)}]] > 0) do={`);
+    p(`    :put ${q(`    port ${sp}: in ${o.bridgeIface}`)}`);
+    p(`  } else={`);
+    p(`    :put ${q(`    port ${sp}: NOT in ${o.bridgeIface}`)}`);
+    p(`  }`);
+  }
+  p(`} else={`);
+  p(`  :put ${q(`  bridge ${o.bridgeIface}: MISSING`)}`);
+  p(`}`);
+  p("");
+
+  if (radiusUsable) {
+    p(`:if ([:len [${RM} find address=${q(o.radiusServer)}]] > 0) do={`);
+    p(`  :do {`);
+    p(`    :put ("  radius auth-port : " . [${RM} get [find address=${q(o.radiusServer)}] authentication-port])`);
+    p(`  } on-error={ :put "  radius auth-port : (not exposed by this RouterOS)" }`);
+    p(`  :do {`);
+    p(`    :put ("  radius acct-port : " . [${RM} get [find address=${q(o.radiusServer)}] accounting-port])`);
+    p(`  } on-error={ :put "  radius acct-port : (not exposed by this RouterOS)" }`);
+    p(`} else={`);
+    p(`  :put ${q(`  radius ${o.radiusServer}: MISSING`)}`);
+    p(`}`);
+    p("");
+  } else {
+    p(`:put ${q(`  radius: SKIPPED - no server/secret pair was configured`)}`);
+    p("");
+  }
+
+  p(`:do {`);
+  p(`  :put ("  accounting     : " . [/ppp/aaa get accounting])`);
+  p(`} on-error={ :put "  accounting     : (no PPP AAA on this router)" }`);
+  p(`:do {`);
+  p(`  :put ("  CoA accept     : " . [/radius incoming get accept])`);
+  p(`} on-error={ :put "  CoA accept     : (no RADIUS incoming on this RouterOS)" }`);
+  p("");
+
+  // The failure list. This is the whole point of setting properties one at a
+  // time: everything this RouterOS refused is named, instead of one bad property
+  // silently costing the operator an entire object.
+  p(`:if ([:len $npFail] > 0) do={`);
+  p(`  :put ""`);
+  p(`  :put "!! NOT APPLIED ON THIS ROUTER (the object still exists) !!"`);
+  p(`  :put ("  " . $npFail)`);
+  p(`  :put "Re-run the wizard once NETPID knows about these properties."`);
+  p(`} else={`);
+  p(`  :put ""`);
+  p(`  :put "All requested properties were accepted by this RouterOS."`);
+  p(`}`);
+  p("");
+  p(`:put ""`);
+  p(`:put "CONFIGURED is all this proves. NETPID marks the router ONLINE only after a"`);
+  p(`:put "RouterOS API health check succeeds over the management path."`);
+  step("done", 100);
   rule();
+
+  // Clear the scratch variable so a re-paste starts from a known state. An
+  // undeclared variable would abort the script HERE, after everything ran.
+  p(`:set npFail ""`);
   return L.join(NL);
 }

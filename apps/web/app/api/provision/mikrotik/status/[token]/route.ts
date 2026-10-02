@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveIsp } from "@/lib/isp";
 import { createServiceClient } from "@/lib/supabase/server";
-import { hashToken, tokenMatchesHash } from "@/lib/mikrotik-provision";
+import { hashToken, stepLabel, stepPlan, tokenMatchesHash } from "@/lib/mikrotik-provision";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +32,20 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
 
+  // step_log is the router's own account of the run. It is mapped to labels here
+  // rather than in the component so the id vocabulary lives next to the rest of
+  // the provisioning contract, and so an id this build does not know renders as
+  // "Working" instead of blank space.
+  const steps = Array.isArray(session.step_log)
+    ? (session.step_log as Array<{ step: string; pct: number; at: string }>)
+        .filter((e) => e && typeof e.step === "string")
+        .map((e) => ({ step: e.step, pct: Number(e.pct) || 0, at: e.at, label: stepLabel(e.step) }))
+    : [];
+
+  // The steps this run WILL report, in order, already labelled. The wizard needs
+  // the pending rows too, and it cannot import the label vocabulary itself.
+  const plan = stepPlan(session.selected_mode).map((id) => ({ step: id, label: stepLabel(id) }));
+
   return NextResponse.json({
     status: session.status,
     progress_pct: session.progress_pct,
@@ -48,6 +62,8 @@ export async function GET(
     bridges: session.detected_bridges,
     selected_mode: session.selected_mode,
     wan_interface: session.wan_interface,
+    steps,
+    plan,
     expires_at: session.expires_at,
   });
 }

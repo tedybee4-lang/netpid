@@ -160,6 +160,12 @@ const { data: defaults } = await svc.from("isp_router_defaults")
     // install one that can never succeed.
     heartbeatUrl: cb.stable ? `${cb.base}/api/provision/mikrotik/heartbeat/${short}` : "",
     heartbeatName: `netpid-heartbeat-${short}`,
+    // The router GETs this at every step boundary so the wizard can show what it
+    // is doing instead of a bar stuck on "script generated". Only a STABLE host
+    // is used, for the same reason the heartbeat needs one: a preview URL is
+    // deleted with the branch, and a permanent script pointing at one would call
+    // a dead host forever.
+    progressUrl: cb.stable ? `${cb.base}/api/provision/mikrotik/progress/${token}` : "",
     wireguard,
   });
 
@@ -188,5 +194,9 @@ const { data: defaults } = await svc.from("isp_router_defaults")
     heartbeat_note: cb.reason,
     // Named explicitly so the dashboard cannot imply more than is true.
     state: "CONFIGURED. Not ONLINE: NETPID must still confirm a RouterOS API health check.",
+    // Whether the router will report progress back as it runs. False means the
+    // bar stays at 70% until the operator confirms, which is a host problem,
+    // not a router one - the script runs identically either way.
+    progress_included: cb.stable,
   }, { status: 200 });
 }

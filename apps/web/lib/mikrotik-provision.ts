@@ -80,6 +80,8 @@ export interface SessionRow {
   pppoe_interfaces: string[];
   current_step: string | null;
   progress_pct: number;
+  /** 0049. Router-reported progress events while the configure script runs. */
+  step_log: StepEvent[];
   error_message: string | null;
   started_at: string;
   last_seen_at: string | null;
@@ -418,6 +420,89 @@ export interface DiscoveryPayload {
   ram?: string | null;
   ifaces?: string | null;
   bridges?: string | null;
+}
+
+export interface StepEvent {
+  step: string;
+  pct: number;
+  at: string;
+}
+
+/**
+ * The step ids the configure script reports, with the sentence the dashboard
+ * shows for each.
+ *
+ * An unknown id is not stored as-is: the value comes off a query string, and
+ * step_log is rendered straight into the operator's screen. Keeping the set
+ * closed means the router cannot put arbitrary text into the UI, and a typo in
+ * the generator shows up here instead of as a mystery gap in the progress bar.
+ */
+export const STEP_LABELS: Record<string, string> = {
+  start: "Script started on the router",
+  interfaces: "Releasing the WAN and starting its DHCP client",
+  bridge: "Building the customer bridge and moving ports into it",
+  hotspot: "Creating the HotSpot pool, profile and server",
+  pppoe: "Creating the PPPoE server",
+  radius: "Configuring RADIUS authentication and accounting",
+  management: "Heartbeat and management tunnel",
+  verify: "Reading the router back to verify what exists",
+  done: "Configuration script finished",
+};
+
+/** Last-resort text for a step id this build of NETPID does not know. */
+export const UNKNOWN_STEP_LABEL = "Working";
+
+export function stepLabel(step: string): string {
+  return STEP_LABELS[step] ?? UNKNOWN_STEP_LABEL;
+}
+
+/**
+ * The ordered steps a given mode will report, so the dashboard can show what is
+ * still to come rather than only what has already happened.
+ *
+ * HotSpot comes before PPPoE because that is the order the script runs them in,
+ * and because a mode that uses neither has no such steps to wait for. Derived
+ * server-side on purpose: mikrotik-provision.ts imports node:crypto for the
+ * token hash, so a client component cannot import the label vocabulary from it
+ * without dragging a server module into the browser bundle.
+ */
+export function stepPlan(mode: string | null | undefined): string[] {
+  const plan = ["start", "interfaces", "bridge"];
+  if (mode === "HOTSPOT" || mode === "HOTSPOT_PPPOE") plan.push("hotspot");
+  if (mode === "PPPOE" || mode === "HOTSPOT_PPPOE") plan.push("pppoe");
+  plan.push("radius", "management", "verify", "done");
+  return plan;
+}
+
+/**
+ * Appends one router-reported step to the stored log.
+ *
+ * The percentage is clamped and the log is capped because both values arrive
+ * from the router: progress_pct has a CHECK constraint in the schema and a
+ * router reporting 400 would fail the whole UPDATE, and an unbounded log on a
+ * long-running session is a row nobody wants to read.
+ *
+ * Monotonic by percentage - a late or retried callback for an earlier step must
+ * not walk the dashboard backwards.
+ */
+export function appendStepEvent(
+  existing: unknown,
+  step: string,
+  pct: number,
+  at = new Date().toISOString(),
+): StepEvent[] {
+  const prior = Array.isArray(existing) ? (existing as StepEvent[]) : [];
+  const clean = prior
+    .filter((e) => e && typeof e.step === "string" && Number.isFinite(Number(e.pct)))
+    .slice(-40);
+
+  const n = Number.isFinite(Number(pct)) ? Math.min(100, Math.max(0, Math.round(Number(pct)))) : 0;
+  const highest = clean.reduce((m, e) => Math.max(m, Number(e.pct) || 0), 0);
+  // Duplicate step, same percentage: the router retried a fetch. Ignore it
+  // rather than filling the log with repeats of work that did not happen.
+  if (clean.some((e) => e.step === step && Number(e.pct) === n)) return clean;
+
+  return [...clean, { step, pct: Math.max(n, highest), at }].slice(-40);
 }
 
 /**
