@@ -458,21 +458,25 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p("} on-error={");
     p(`  :put ("SKIP " . ${q(sp)} . ": could not be bridged.")`);
     p("}");
-    // The field run produced NO output from these blocks at all - no "moving",
-    // no "already in", no SKIP - and the report then said the port was not in
-    // the bridge. A block that neither speaks nor acts cannot be diagnosed from
-    // the outside, so it now checks its own work and says what happened.
+    // The field run produced NO output from these blocks at all, and then the
+    // report said the port was not in the bridge. Now each port says where it
+    // landed.
     //
-    // Deliberately SEPARATE top-level statements rather than more lines inside
-    // the guard above: the last bug in this script was one malformed line taking
-    // its whole enclosing block down with it.
-    p(`:local npP ${q(sp)}`);
+    // NO VARIABLE, and that is the whole point. Every line pasted into the
+    // console is its OWN SCOPE, and RouterOS's docs are explicit: "every
+    // variable must be declared before use ... using an undeclared variable
+    // results in a compilation error." A `:local` on one line is invisible to
+    // the next, where `$npP` reads as empty and `:set npP ""` is a syntax error
+    // pointing at the name. `:set npFail` inside an `on-error={}` block failed
+ // the same way and took that whole block down with it.
+    //
+    // So the interface name is interpolated here, at generation time, and the
+    // emitted script contains no state at all.
     p(`:if ([:len [/interface bridge port find interface=${sp} where bridge=${q(o.bridgeIface)}]] = 0) do={`);
-    p(`  :put ("  !! " . $npP . ": still NOT in " . ${q(o.bridgeIface)} . " - run /interface bridge port print")`);
+    p(`  :put ${q(`  !! ${sp}: still NOT in ${o.bridgeIface} - run /interface bridge port print`)}`);
     p(`} else={`);
-    p(`  :put ("  ok  " . $npP . " -> " . ${q(o.bridgeIface)})`);
+    p(`  :put ${q(`  ok  ${sp} -> ${o.bridgeIface}`)}`);
     p(`}`);
-    p(`:set npP ""`);
   }
   p("");
 // ---- 3. HotSpot ----------------------------------------------------------
@@ -567,13 +571,33 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       p("");
       setp("/ip hotspot", HS, `comment=${q(`${tag} hotspot`)}`, "hotspot.comment");
       setp("/ip hotspot", HS, `address-pool=${q(o.hotspotRange)}`, "hotspot.address-pool");
-      setp("/ip hotspot", HS, "add-default-route=yes", "hotspot.add-default-route");
-      setp("/ip hotspot", HS, `dns-name=${q(o.hotspotDnsName)}`, "hotspot.dns-name");
-      setp("/ip hotspot", HS, "address-type=ethernet", "hotspot.address-type");
+
+      // RouterOS 7 DROPPED these three from the HotSpot server. Two independent
+      // sources agree: the 7.24 CLI reference lists only name, interface,
+      // address-pool, profile, idle-timeout, keepalive-timeout, login-timeout,
+      // addresses-per-mac and the read-only ip-of-dns-name - and the device
+      // itself refused all three on a real run:
+      //
+      //   NETPID skipped hotspot.add-default-route
+      //   NETPID skipped hotspot.dns-name
+      //   NETPID skipped hotspot.address-type
+      //
+      // Emitting them on v7 bought nothing but three scary lines an operator
+      // has to learn to ignore - which is how real failures get missed. They
+      // are still sent on v6, where they exist.
+      if (!v7) {
+        setp("/ip hotspot", HS, "add-default-route=yes", "hotspot.add-default-route");
+        setp("/ip hotspot", HS, `dns-name=${q(o.hotspotDnsName)}`, "hotspot.dns-name");
+        setp("/ip hotspot", HS, "address-type=ethernet", "hotspot.address-type");
+      } else {
+        c("RouterOS 7 has no dns-name / add-default-route / address-type on the");
+        c("HotSpot server, so they are not sent. The portal still answers on IP.");
+        if (o.hotspotDnsName) {
+          c("For a named login page on v7, create the DNS record anyway:");
+          p(`  :put ${q(`  ${o.hotspotDnsName} -> this router's WAN address`)}`);
+        }
+      }
       p("");
-      c("If dns-name is in the skipped list, this RouterOS build does not expose");
-      c("it on the HotSpot server. Create the DNS record anyway:");
-      p(`  :put ("  " . ${q(o.hotspotDnsName)} . " -> this router's WAN address")`);
     } else {
       c("No HotSpot subnet or range was supplied, so no HotSpot server was");
       c("created. A half-built portal is worse than none: clients associate and");

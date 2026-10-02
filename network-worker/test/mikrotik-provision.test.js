@@ -727,11 +727,17 @@ test("a version-specific property never takes the whole object down with it", ()
     "cookie belongs INSIDE login-by, not in a separate switch");
   assert.match(GEN, /http-cookie-lifetime=/, "and its lifetime is set explicitly");
 
-  // 3. dns-name is still requested, but never bundled into an `add` alongside
-  //    properties the server cannot work without.
-  assert.match(GEN, /dns-name=/, "dns-name is still requested");
+  // 3. dns-name is still requested where it exists, but never bundled into an
+  //    `add` alongside properties the server cannot work without. RouterOS 7
+  //    dropped it from ip/hotspot (confirmed on the device AND in the CLI
+  //    reference), so v7 sends nothing and tells the operator to make the DNS
+  //    record; v6 still sets it.
   assert.doesNotMatch(GEN, /\/ip hotspot add[^\n]*dns-name=/,
     "dns-name must not ride in the add that creates the HotSpot server");
+  assert.match(GEN_V6, /\/ip hotspot set \[find name=netpid\] dns-name=/,
+    "v6 still sets dns-name, in its own guarded statement");
+  assert.doesNotMatch(GEN_V6, /\/ip hotspot add[^\n]*dns-name=/,
+    "and never in the add on v6 either");
   assert.doesNotMatch(GEN, /\/ip hotspot profile add[^\n]*(use-radius|login-by)=/,
     "the profile add carries only the name it cannot work without");
 
@@ -744,8 +750,8 @@ test("a version-specific property never takes the whole object down with it", ()
   // 5. Refusals are announced by PRINTING, never by appending to a variable.
   assert.match(GEN, /:put \("  NETPID skipped " \. "profile\.use-radius"\)/,
     "a refused profile property is announced");
-  assert.match(GEN, /:put \("  NETPID skipped " \. "hotspot\.dns-name"\)/,
-    "and so is a refused HotSpot server property");
+  assert.match(GEN, /:put \("  NETPID skipped " \. "hotspot\.comment"\)/,
+    "and so is a refused HotSpot server property - the device refused comment on it too");
 
   // 6. And the script must never end by asserting that everything worked from
   //    state it computed itself. In the field it printed
@@ -802,6 +808,35 @@ test("no HotSpot or RADIUS `add` carries a comment", () => {
     "nothing may be looked up by comment");
 });
 
+test("properties the device refused are not offered again on that version", () => {
+  // The v7 HotSpot server refused three properties on a real router:
+  //
+  //   NETPID skipped hotspot.add-default-route
+  //   NETPID skipped hotspot.dns-name
+  //   NETPID skipped hotspot.address-type
+  //
+  // and the 7.24 CLI reference agrees - ip/hotspot lists only name, interface,
+  // address-pool, profile, idle-timeout, keepalive-timeout, login-timeout,
+  // addresses-per-mac and the read-only ip-of-dns-name.
+  //
+  // Repeating a refusal on every run trains the operator to ignore the skipped
+  // list, which is exactly how a REAL failure gets missed. So a property proven
+  // absent on a version is not sent to that version again.
+  for (const prop of ["add-default-route=", "dns-name=", "address-type="]) {
+    assert.doesNotMatch(GEN, new RegExp(`hotspot set [^\\n]*${prop}`),
+      `v7 must not send ${prop} to /ip hotspot again`);
+    assert.match(GEN_V6, new RegExp(`hotspot set [^\\n]*${prop}`),
+      `v6 still supports ${prop} and must keep sending it`);
+  }
+
+  // What v7 DOES have must still be sent, or the portal has no pool.
+  assert.match(GEN, /\/ip hotspot set \[find name=netpid\] address-pool=/);
+  assert.match(GEN, /\/ip hotspot add name=netpid interface="bridge-lan" profile=netpid/);
+
+  // The operator is still told the named login page needs a DNS record.
+  assert.match(GEN, /login\.isp\.net -> this router's WAN address/);
+});
+
 test("each guarded property is followed by a check, so a silent add is visible", () => {
   // The bridge-port section reported
   //   port ether2: NOT in bridge-lan
@@ -810,56 +845,70 @@ test("each guarded property is followed by a check, so a silent add is visible",
   // produces no output and changes no state is the one case the read-back
   // report cannot explain, so the port block now verifies itself at the end
   // and says plainly when the port did not land.
-  assert.match(GEN, /\$npP \. ": still NOT in "/,
+  assert.match(GEN, /:put "  !! ether2: still NOT in bridge-lan/,
     "a port that did not land says so where it was added");
   // And the HotSpot pool, which the same run proved is not enough on its own.
   assert.match(GEN, /hotspot\.address-pool/,
     "address-pool is still applied and can still be skipped");
 });
 
-test("every generated RouterOS variable name survives the router's parser", () => {
-  // FIELD FAILURE, the most expensive one in this file's history:
+test("generated scripts carry no state across RouterOS scope boundaries", () => {
+  // TWO FIELD FAILURES, one root cause, and my first diagnosis of it was wrong.
   //
-  //   syntax error (line 4 column 8)
-  //     :do {
-  //       /ip hotspot profile set [find name=netpid] use-radius=yes
-  //     } on-error={
-  //       :set npFail ($npFail . " " . "profile.use-radius")     <- line 4, col 8
+  //   :local npP "ether2"
+  //   :if (...) do={ :put ("  !! " . $npP . ...) }
+  //     ->  !! : still NOT in bridge-lan        (the name came out EMPTY)
+  //   :set npP ""
+  //     ->  syntax error (line 1 column 6)      (column 6 is the variable name)
   //
-  // Column 8 is the first character of the variable name, so the router refused
-  // the NAME. Every other variable this repo has ever emitted is five
-  // characters or fewer - npUrl, npWb, npOld - and all of them work on the same
-  // box. RouterOS variable names are case-sensitive and must be letters and
-  // digits; nothing here is either, except the length.
+  // and, identically, `:set npFail (...)` inside an `on-error={}` block took
+  // that whole block down with it.
   //
-  // It matters far more than a normal runtime error because a RouterOS parse
-  // error discards the WHOLE enclosing block before executing any of it: the
-  // `add` two lines above never ran, the `:put` above that never printed, and
-  // the router was left with no HotSpot profile and no HotSpot server.
+  // It is NOT the name length. npP is three characters and was still refused.
+  // It is SCOPE: the MikroTik scripting docs say "every variable must be
+  // declared before use with the local or global keyword. Using an undeclared
+  // variable results in a compilation error." Every line pasted into the
+  // console is its own scope, so a `:local` on one line is invisible to the
+  // next - $npP reads empty and `:set npP ""` is a compile error at the name.
   //
-  // The script no longer accumulates anything, so `npFail` is gone. This guard
-  // stops the next long name from being introduced.
+  // The variables that "worked" (npUrl, npWb, npOld) only ever appeared inside
+  // the single block that declared them, which is why they survived.
+  //
+  // The generated script therefore contains NO state at all. Values are
+  // interpolated at generation time instead of being assembled on the router.
+  // The CONFIGURE script is PASTED into the console line by line, so each line is
+  // its own scope and no statement may depend on another. The BOOTSTRAP script
+  // is /imported, which runs the whole file as one scope, so it may keep its
+  // state - that difference is exactly why the same construct is safe in one
+  // script and fatal in the other.
+  const CONFIGURE = [GEN, GEN_BOTH, GEN_V6, GEN_NOSECRET, GEN_WG];
+  for (const script of CONFIGURE) {
+    assert.doesNotMatch(script, /^\s*:set\s/m,
+      "a pasted script must not use :set - it cannot reach the next line's scope");
+    assert.doesNotMatch(script, /^\s*:global\s/m,
+      "and must not use :global - a permanent global is not a scratch pad");
+  }
+
+  // Whatever IS read as $var must have been declared first in the same script.
+  // This is the rule that both field failures broke. A `:foreach` loop variable
+  // is the one exception: the loop itself declares it.
   for (const script of ALL_GEN) {
-    for (const m of script.matchAll(/:(?:local|set|global)\s+([A-Za-z0-9_]+)/g)) {
-      assert.ok(m[1].length <= 5,
-        `RouterOS variable "${m[1]}" is ${m[1].length} characters; 5 is the longest ` +
-        `name proven to parse on a real device`);
-      assert.match(m[1], /^[A-Za-z][A-Za-z0-9]*$/,
-        `variable "${m[1]}" must be letters and digits only`);
+    const declared = new Set();
+    for (const line of script.split("\n")) {
+      for (const m of line.matchAll(/:local\s+([A-Za-z][A-Za-z0-9]*)/g)) declared.add(m[1]);
+      for (const m of line.matchAll(/:foreach\s+([A-Za-z][A-Za-z0-9]*)\s+in=/g)) declared.add(m[1]);
+      for (const m of line.matchAll(/\$(\w+)/g)) {
+        assert.ok(declared.has(m[1]),
+          `$${m[1]} is read but never declared with :local or :foreach`);
+      }
     }
   }
 
-  // The accumulator must stay gone. Reintroducing one is the regression.
-  //
-  // Scoped to the CONFIGURE script on purpose. The bootstrap script genuinely
-  // does `:set npUrl ($npUrl . ...)` to build its query string in a single
-  // linear flow, and that has always worked - it is self-appending *inside a
-  // guard*, from a state block, that is what killed this script.
-  assert.doesNotMatch(GEN, /npFail/, "the refused variable name must not come back");
-  for (const script of [GEN, GEN_BOTH, GEN_V6, GEN_NOSECRET, GEN_WG]) {
-    assert.doesNotMatch(script, /:set \w+ \(\$\w+ \. /,
-      "the configure script must not accumulate state at all");
-  }
+  // The port check must interpolate, not assemble at runtime.
+  assert.match(GEN, /:put "  !! ether2: still NOT in bridge-lan/,
+    "the port name is baked in at generation time");
+  assert.match(GEN, /:put "  ok  ether2 -> bridge-lan"/);
+  assert.doesNotMatch(GEN, /npP/, "and no scratch variable remains for it");
 });
 
 test("every generated block is closed, so a paste never hangs the console", () => {
