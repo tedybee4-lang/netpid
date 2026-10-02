@@ -316,9 +316,32 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p(`:do { /tool fetch mode=https keep-result=no url=${q(`${progressBase}?step=${id}&pct=${pct}`)} } on-error={ }`);
   };
 
-  /** Records a property this RouterOS refused. Printed in the final report. */
+  /**
+   * Records a property this RouterOS refused, by PRINTING it.
+   *
+   * The obvious implementation - accumulate the names into a variable and print
+   * a summary at the end - is exactly what broke this script in the field:
+   *
+   *   syntax error (line 4 column 8)
+   *     :set npFail ($npFail . " " . "profile.use-radius")
+   *
+   * A RouterOS variable name is case-sensitive and this one was refused, so
+   * `:set` never ran. Because that is a PARSE error it kills the entire
+   * enclosing `:do {...} on-error={...}` block BEFORE any of it executes - the
+   * `/ip hotspot profile add` sitting two lines above never ran either, and the
+   * `:put` on the line before it never printed. The router ended up with no
+   * HotSpot profile AND no HotSpot server.
+   *
+   * It then failed in the most expensive way possible: `npFail` stayed empty,
+   * so the report printed "All requested properties were accepted by this
+   * RouterOS" three lines above a MISSING HotSpot profile.
+   *
+   * A `:put` inside the guard has no variable to get wrong, so the refusal is
+   * always visible in the transcript. Keep every generated variable name short
+   * and in one case - the test suite enforces both.
+   */
   const fail = (label: string) => {
-    p(`  :set npFail ($npFail . " " . ${q(label)})`);
+    p(`  :put ("  NETPID skipped " . ${q(label)})`);
   };
 
   /** `/menu set <target> <prop=value>` with an independent guard. */
@@ -349,10 +372,14 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   c("set ONE AT A TIME inside its own guard. RouterOS rejects an entire command");
   c("when it does not recognise a single property name in it, so the old shape -");
   c("one `add` carrying six properties - meant one unsupported name destroyed");
-  c("the whole object. Anything this RouterOS refuses is collected in the failure");
-  c("list printed at the end instead of vanishing silently.");
+  c("the whole object.");
   p("");
-  p(`:local npFail ""`);
+  c("Anything this RouterOS refuses is printed as a 'NETPID skipped' line the");
+  c("moment it happens. It is deliberately NOT collected into a variable and");
+  c("summarised at the end: an undeclared or malformed variable is a PARSE error,");
+  c("and a parse error discards the entire enclosing block - which is how a");
+  c("summariser cost this script its whole HotSpot configuration in the field.");
+  p("");
   step("start", 5);
   p("");
 
@@ -470,8 +497,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p(`}`);
     p("");
     c("Each remaining property is applied on its own. If this RouterOS refuses");
-    c("one, the profile still exists and the exact property is named in the");
-    c("failure list at the end of this script.");
+    c("one, the profile still exists and the refusal is printed immediately.");
     setp("/ip hotspot profile", PROFILE, "use-radius=yes", "profile.use-radius");
     setp("/ip hotspot profile", PROFILE, "radius-interim-update=5m", "profile.radius-interim-update");
     setp("/ip hotspot profile", PROFILE, "login-by=http-chap,https,http-pap,cookie", "profile.login-by");
@@ -795,27 +821,23 @@ export function buildConfigureScript(o: ConfigureOptions): string {
   p(`} on-error={ :put "  CoA accept     : (no RADIUS incoming on this RouterOS)" }`);
   p("");
 
-  // The failure list. This is the whole point of setting properties one at a
-  // time: everything this RouterOS refused is named, instead of one bad property
-  // silently costing the operator an entire object.
-  p(`:if ([:len $npFail] > 0) do={`);
-  p(`  :put ""`);
-  p(`  :put "!! NOT APPLIED ON THIS ROUTER (the object still exists) !!"`);
-  p(`  :put ("  " . $npFail)`);
-  p(`  :put "Re-run the wizard once NETPID knows about these properties."`);
-  p(`} else={`);
-  p(`  :put ""`);
-  p(`  :put "All requested properties were accepted by this RouterOS."`);
-  p(`}`);
-  p("");
+  // No "all clear" is printed from a variable. This script used to end with
+  //   All requested properties were accepted by this RouterOS.
+  // three lines below
+  //   profile netpid: MISSING - it was not created.
+  // because the accumulator that fed the check was itself the broken statement.
+  // A summary computed from state this script does not control is worse than no
+  // summary, so the reader is pointed at the two lists that ARE real: the
+  // NETPID skipped lines and the MISSING lines above.
+  p(`:put ""`);
+  p(`:put "Two lists above are the whole story on this router:"`);
+  p(`:put "  'NETPID skipped ...'  a property this RouterOS refused."`);
+  p(`:put "  '... MISSING'          an object that was not created."`);
+  p(`:put "Anything else was applied. Re-read this output before trusting it."`);
   p(`:put ""`);
   p(`:put "CONFIGURED is all this proves. NETPID marks the router ONLINE only after a"`);
   p(`:put "RouterOS API health check succeeds over the management path."`);
   step("done", 100);
   rule();
-
-  // Clear the scratch variable so a re-paste starts from a known state. An
-  // undeclared variable would abort the script HERE, after everything ran.
-  p(`:set npFail ""`);
   return L.join(NL);
 }

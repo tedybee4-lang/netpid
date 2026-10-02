@@ -741,15 +741,98 @@ test("a version-specific property never takes the whole object down with it", ()
   assert.ok(guards >= 12,
     `expected a guard per optional property, found only ${guards}`);
 
-  // 5. Refusals are COLLECTED and reported, never swallowed by an empty
-  //    on-error. This is the whole point of the per-property shape.
-  assert.match(GEN, /:local npFail ""/, "the failure list is a declared local");
-  assert.match(GEN, /:set npFail \(\$npFail \. " " \. "profile\.use-radius"\)/,
-    "a refused profile property is recorded by name");
-  assert.match(GEN, /:set npFail \(\$npFail \. " " \. "hotspot\.dns-name"\)/,
+  // 5. Refusals are announced by PRINTING, never by appending to a variable.
+  assert.match(GEN, /:put \("  NETPID skipped " \. "profile\.use-radius"\)/,
+    "a refused profile property is announced");
+  assert.match(GEN, /:put \("  NETPID skipped " \. "hotspot\.dns-name"\)/,
     "and so is a refused HotSpot server property");
-  assert.match(GEN, /:put \("  " \. \$npFail\)/, "the list is printed at the end");
-  assert.match(GEN, /^:set npFail ""$/m, "and the scratch variable is cleared");
+
+  // 6. And the script must never end by asserting that everything worked from
+  //    state it computed itself. In the field it printed
+  //      All requested properties were accepted by this RouterOS.
+  //    three lines below
+  //      profile netpid: MISSING - it was not created.
+  // because the accumulator feeding that check was itself the refused statement.
+  assert.doesNotMatch(GEN, /All requested properties were accepted/,
+    "no self-graded all-clear");
+  assert.match(GEN, /NETPID skipped \.\.\./,
+    "the reader is pointed at the real lists instead");
+});
+
+test("every generated RouterOS variable name survives the router's parser", () => {
+  // FIELD FAILURE, the most expensive one in this file's history:
+  //
+  //   syntax error (line 4 column 8)
+  //     :do {
+  //       /ip hotspot profile set [find name=netpid] use-radius=yes
+  //     } on-error={
+  //       :set npFail ($npFail . " " . "profile.use-radius")     <- line 4, col 8
+  //
+  // Column 8 is the first character of the variable name, so the router refused
+  // the NAME. Every other variable this repo has ever emitted is five
+  // characters or fewer - npUrl, npWb, npOld - and all of them work on the same
+  // box. RouterOS variable names are case-sensitive and must be letters and
+  // digits; nothing here is either, except the length.
+  //
+  // It matters far more than a normal runtime error because a RouterOS parse
+  // error discards the WHOLE enclosing block before executing any of it: the
+  // `add` two lines above never ran, the `:put` above that never printed, and
+  // the router was left with no HotSpot profile and no HotSpot server.
+  //
+  // The script no longer accumulates anything, so `npFail` is gone. This guard
+  // stops the next long name from being introduced.
+  for (const script of ALL_GEN) {
+    for (const m of script.matchAll(/:(?:local|set|global)\s+([A-Za-z0-9_]+)/g)) {
+      assert.ok(m[1].length <= 5,
+        `RouterOS variable "${m[1]}" is ${m[1].length} characters; 5 is the longest ` +
+        `name proven to parse on a real device`);
+      assert.match(m[1], /^[A-Za-z][A-Za-z0-9]*$/,
+        `variable "${m[1]}" must be letters and digits only`);
+    }
+  }
+
+  // The accumulator must stay gone. Reintroducing one is the regression.
+  //
+  // Scoped to the CONFIGURE script on purpose. The bootstrap script genuinely
+  // does `:set npUrl ($npUrl . ...)` to build its query string in a single
+  // linear flow, and that has always worked - it is self-appending *inside a
+  // guard*, from a state block, that is what killed this script.
+  assert.doesNotMatch(GEN, /npFail/, "the refused variable name must not come back");
+  for (const script of [GEN, GEN_BOTH, GEN_V6, GEN_NOSECRET, GEN_WG]) {
+    assert.doesNotMatch(script, /:set \w+ \(\$\w+ \. /,
+      "the configure script must not accumulate state at all");
+  }
+});
+
+test("every generated block is closed, so a paste never hangs the console", () => {
+  // The operator pastes into a serial console, one top-level command at a time.
+  // A block that is opened and never closed leaves the console showing `{...`
+  // forever, waiting for input that is never coming - which is exactly how a
+  // half-run configuration looks from the other end.
+  //
+  // Balance is CUMULATIVE, not per line: `:if (...) do={` legitimately closes on
+  // a later line, so counting braces within one line proves nothing.
+  for (const script of ALL_GEN) {
+    let depth = 0;
+    let worst = 0;
+    script.split("\n").forEach((line, i) => {
+      depth += (line.match(/\{/g) ?? []).length;
+      depth -= (line.match(/\}/g) ?? []).length;
+      if (depth < worst) worst = depth;
+      assert.ok(depth >= 0,
+        `line ${i + 1} closes a block that was never opened: ${line.slice(0, 90)}`);
+    });
+    assert.equal(depth, 0,
+      `script ends with ${depth} block(s) still open - the console would wait forever`);
+
+    // A comment must never carry a real block closer. `# }` does NOT close
+    // anything, so an emitted one silently unbalances the script.
+    for (const line of script.split("\n")) {
+      if (!line.trim().startsWith("#")) continue;
+      assert.ok(!/[{}]/.test(line),
+        `a comment must not carry braces: ${line.slice(0, 90)}`);
+    }
+  }
 });
 
 test("the final report reads the router back instead of echoing what was asked", () => {
