@@ -458,6 +458,21 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p("} on-error={");
     p(`  :put ("SKIP " . ${q(sp)} . ": could not be bridged.")`);
     p("}");
+    // The field run produced NO output from these blocks at all - no "moving",
+    // no "already in", no SKIP - and the report then said the port was not in
+    // the bridge. A block that neither speaks nor acts cannot be diagnosed from
+    // the outside, so it now checks its own work and says what happened.
+    //
+    // Deliberately SEPARATE top-level statements rather than more lines inside
+    // the guard above: the last bug in this script was one malformed line taking
+    // its whole enclosing block down with it.
+    p(`:local npP ${q(sp)}`);
+    p(`:if ([:len [/interface bridge port find interface=${sp} where bridge=${q(o.bridgeIface)}]] = 0) do={`);
+    p(`  :put ("  !! " . $npP . ": still NOT in " . ${q(o.bridgeIface)} . " - run /interface bridge port print")`);
+    p(`} else={`);
+    p(`  :put ("  ok  " . $npP . " -> " . ${q(o.bridgeIface)})`);
+    p(`}`);
+    p(`:set npP ""`);
   }
   p("");
 // ---- 3. HotSpot ----------------------------------------------------------
@@ -486,7 +501,19 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     const PROFILE = "[find name=netpid]";
     p(`:if ([:len [/ip hotspot profile find name=netpid]] = 0) do={`);
     p(`  :do {`);
-    p(`    /ip hotspot profile add name=netpid comment=${q(`${tag} hs-profile`)}`);
+    // `name` and NOTHING ELSE. Not `comment`, which is what this used to send:
+    //
+    //   FATAL: the HotSpot profile could not be created at all.
+    //
+    // `comment` is the one property every other menu here accepts - the bridge
+    // add and the pool add both took it - but the HotSpot menus reject it, and
+    // the RouterOS 7.24 CLI reference for ip/hotspot/profile and ip/hotspot
+    // lists no `comment` property at all. One unsupported name rejects the whole
+    // command, so carrying it here cost the entire object.
+    //
+    // Tagging is not lost: it is set immediately afterwards, guarded, and
+    // idempotency keys off `name`, never off the comment.
+    p(`    /ip hotspot profile add name=netpid`);
     p(`    :put "HotSpot profile created."`);
     p(`  } on-error={`);
     p(`    :put "FATAL: the HotSpot profile could not be created at all."`);
@@ -498,6 +525,7 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     p("");
     c("Each remaining property is applied on its own. If this RouterOS refuses");
     c("one, the profile still exists and the refusal is printed immediately.");
+    setp("/ip hotspot profile", PROFILE, `comment=${q(`${tag} hs-profile`)}`, "profile.comment");
     setp("/ip hotspot profile", PROFILE, "use-radius=yes", "profile.use-radius");
     setp("/ip hotspot profile", PROFILE, "radius-interim-update=5m", "profile.radius-interim-update");
     setp("/ip hotspot profile", PROFILE, "login-by=http-chap,https,http-pap,cookie", "profile.login-by");
@@ -518,18 +546,16 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       p(`  /ip pool add name=${q(o.hotspotRange)} ranges=${q(o.hotspotRange)} comment=${q(`${tag} hs-pool`)}`);
       p("}");
       p("");
-      // The HotSpot SERVER is built the same way: the three properties it cannot
-      // function without go in the `add`, everything else is set separately.
-      //
-      // `dns-name` and `address-type` were previously bundled into the `add`.
-      // On this RouterOS that combination rejected the whole command and no
-      // HotSpot server was created at all - a portal that clients can associate
-      // with and never get a login page from. Neither is load-bearing, so
-      // neither is allowed to be able to destroy the object.
+      // The HotSpot SERVER is built the same way, and for the same reason: the
+      // field run showed
+      //   FATAL: the HotSpot server could not be created at all.
+      // for a command whose only optional property was `comment`, which the
+      // HotSpot menus do not accept. name + interface + profile go in the add -
+      // those are what the server cannot work without - and nothing else does.
       const HS = "[find name=netpid]";
       p(`:if ([:len [/ip hotspot find name=netpid]] = 0) do={`);
       p(`  :do {`);
-      p(`    /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid comment=${q(`${tag} hotspot`)}`);
+      p(`    /ip hotspot add name=netpid interface=${q(o.bridgeIface)} profile=netpid`);
       p(`    :put ("HotSpot server created on " . ${q(o.bridgeIface)} . ".")`);
       p(`  } on-error={`);
       p(`    :put "FATAL: the HotSpot server could not be created at all."`);
@@ -539,13 +565,14 @@ export function buildConfigureScript(o: ConfigureOptions): string {
       p(`  :put "HotSpot server reused."`);
       p(`}`);
       p("");
+      setp("/ip hotspot", HS, `comment=${q(`${tag} hotspot`)}`, "hotspot.comment");
       setp("/ip hotspot", HS, `address-pool=${q(o.hotspotRange)}`, "hotspot.address-pool");
       setp("/ip hotspot", HS, "add-default-route=yes", "hotspot.add-default-route");
       setp("/ip hotspot", HS, `dns-name=${q(o.hotspotDnsName)}`, "hotspot.dns-name");
       setp("/ip hotspot", HS, "address-type=ethernet", "hotspot.address-type");
       p("");
-      c("If dns-name above is in the failure list, this RouterOS build does not");
-      c("expose it on the HotSpot server. Create the DNS record anyway:");
+      c("If dns-name is in the skipped list, this RouterOS build does not expose");
+      c("it on the HotSpot server. Create the DNS record anyway:");
       p(`  :put ("  " . ${q(o.hotspotDnsName)} . " -> this router's WAN address")`);
     } else {
       c("No HotSpot subnet or range was supplied, so no HotSpot server was");
@@ -632,7 +659,10 @@ export function buildConfigureScript(o: ConfigureOptions): string {
     // RADIUS client is never created - PPPoE then authenticates against nothing
     // and every subscriber looks like a bad password.
     p(`  :do {`);
-    p(`    ${RM} add address=${q(o.radiusServer)} secret=${q(o.radiusSecret)} comment=${q(`NETPID:${o.nasShortname}`)}`);
+    // address + secret only. `comment` is set separately below, because the
+    // HotSpot menus just refused it and this menu is not proven to take it
+    // either - a comment in the add is a whole-entry risk for a label.
+    p(`    ${RM} add address=${q(o.radiusServer)} secret=${q(o.radiusSecret)}`);
     p(`    :put "RADIUS entry created."`);
     p(`  } on-error={`);
     p(`    :put "FATAL: the RADIUS client could not be created."`);

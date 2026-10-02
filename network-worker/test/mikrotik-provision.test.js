@@ -759,6 +759,64 @@ test("a version-specific property never takes the whole object down with it", ()
     "the reader is pointed at the real lists instead");
 });
 
+test("no HotSpot or RADIUS `add` carries a comment", () => {
+  // FIELD FAILURE, twice in one run:
+  //
+  //   FATAL: the HotSpot profile could not be created at all.
+  //   FATAL: the HotSpot server could not be created at all.
+  //
+  // for these two commands:
+  //
+  //   /ip hotspot profile add name=netpid comment="NETPID:<id> hs-profile"
+  //   /ip hotspot add name=netpid interface="bridge-lan" profile=netpid comment="..."
+  //
+  // `comment` is accepted by /interface bridge and by /ip pool in the very same
+  // script - both of those objects were created - but the HotSpot menus reject
+  // it, and the RouterOS 7.24 CLI reference for ip/hotspot/profile and
+  // ip/hotspot lists no comment property at all. One unsupported name rejects
+  // the entire command, so a cosmetic label was destroying the object.
+  //
+  // The rule this enforces: an `add` carries ONLY what the object cannot work
+  // without. Everything else - including the NETPID tag - is set afterwards in
+  // its own guard, so a refusal costs a label and not the entry.
+  for (const menu of ["/ip hotspot profile add", "/ip hotspot add", "/radius add"]) {
+    const line = GEN.split("\n").find((l) => l.trim().startsWith(menu));
+    assert.ok(line, `${menu} must be emitted`);
+    assert.doesNotMatch(line, /comment=/,
+      `${menu} must not carry comment= - it is not a HotSpot property`);
+  }
+  // The v6 RADIUS path is the same menu and gets the same treatment.
+  const v6 = GEN_V6.split("\n").find((l) => l.trim().startsWith("/ip radius add"));
+  assert.ok(v6, "/ip radius add must be emitted on v6");
+  assert.doesNotMatch(v6, /comment=/, "and it must not carry comment= either");
+
+  // The tag is not lost: it is applied as a guarded set instead.
+  assert.match(GEN, /profile set \[find name=netpid\] comment=/,
+    "the HotSpot profile is still tagged");
+  assert.match(GEN, /hotspot set \[find name=netpid\] comment=/,
+    "and so is the HotSpot server");
+
+  // Tagging must never be load-bearing for idempotency, or losing the label
+  // would mean losing the ability to find the object on a re-run.
+  assert.doesNotMatch(GEN, /find comment=/,
+    "nothing may be looked up by comment");
+});
+
+test("each guarded property is followed by a check, so a silent add is visible", () => {
+  // The bridge-port section reported
+  //   port ether2: NOT in bridge-lan
+  // with no output at all from the block that was supposed to add it - neither
+  // "moving ...", nor "already in ...", nor the SKIP fallback. A block that
+  // produces no output and changes no state is the one case the read-back
+  // report cannot explain, so the port block now verifies itself at the end
+  // and says plainly when the port did not land.
+  assert.match(GEN, /\$npP \. ": still NOT in "/,
+    "a port that did not land says so where it was added");
+  // And the HotSpot pool, which the same run proved is not enough on its own.
+  assert.match(GEN, /hotspot\.address-pool/,
+    "address-pool is still applied and can still be skipped");
+});
+
 test("every generated RouterOS variable name survives the router's parser", () => {
   // FIELD FAILURE, the most expensive one in this file's history:
   //
@@ -1032,13 +1090,42 @@ test("no firewall is flushed even to make room", () => {
   }
 });
 
-test("every created object is tagged with the NETPID router id", () => {
+test("every created object is tagged, by add or by a guarded set", () => {
   const adds = creates(GEN).concat(creates(GEN_BOTH));
   assert.ok(adds.length >= 8, `expected many create statements, found ${adds.length}`);
-  // /radius incoming is the one deliberate exception: a singleton menu with no
-  // comment property, which fails the line outright if one is set.
+
+  // The rule is that every object ends up carrying the NETPID comment. Where
+  // that comment is APPLIED is a separate question, and the HotSpot menus
+  // answered it in the field:
+  //
+  //   FATAL: the HotSpot profile could not be created at all.
+  //
+  // for `/ip hotspot profile add name=netpid comment="..."` - while
+  // `/interface bridge add` and `/ip pool add` in the same script took a comment
+  // happily. So a label inside an `add` is only allowed where the menu accepts
+  // one; everywhere else it is a guarded `set` that can be refused on its own.
+  //
+  // /radius incoming is the other exception: a singleton menu with no comment
+  // property, which fails the line outright if one is set.
   const untagged = adds.filter((l) => !l.includes("comment=") && !l.includes("/radius incoming"));
-  assert.deepEqual(untagged, [], `untagged creates: ${untagged.join(" | ")}`);
+
+  const needsDeferredTag = [
+    ["/ip hotspot profile add", "/ip hotspot profile set [find name=netpid] comment="],
+    ["/ip hotspot add", "/ip hotspot set [find name=netpid] comment="],
+    ["/radius add", "/radius set [find address="],
+  ];
+  for (const line of untagged) {
+    const menu = line.trim().split(/\s+/).slice(0, 4).join(" ");
+    const rule = needsDeferredTag.find(([m]) => menu.startsWith(m));
+    assert.ok(rule,
+      `${menu} is created untagged with no guarded comment set to replace it`);
+    assert.ok(GEN.includes(rule[1]),
+      `${rule[1]}... is missing, so the object would never be tagged`);
+  }
+
+  // And nothing may look an object up by its comment, or losing the label would
+  // lose the object on the next run.
+  assert.doesNotMatch(GEN, /find comment=/, "nothing is looked up by comment");
 });
 
 test("/radius incoming is set WITHOUT comment, which that menu rejects", () => {
